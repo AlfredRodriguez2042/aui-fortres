@@ -72,10 +72,11 @@ Run this script after your first boot with archlinux (as root)
     MOUNTPOINT="/mnt"
   #}}}
   ARCHI=$(uname -m) # ARCHITECTURE
-  UEFI=0
-  LVM=0
-  LUKS=0
-  LUKS_DISK="sda2"
+	  UEFI=0
+	  LVM=0
+	  LUKS=0
+	  LUKS_DISK="sda2"
+	  KERNEL_PRIMARY="linux-zen"
   AUR=$(echo -e "(${BPurple}aur${Reset})")
   EXTERNAL=$(echo -e "(${BYellow}external${Reset})")
   AUI_DIR=$(pwd) #CURRENT DIRECTORY
@@ -138,11 +139,11 @@ Run this script after your first boot with archlinux (as root)
     else
       modprobe -q efivarfs            # all others
     fi
-    if [[ -d "/sys/firmware/efi/" ]]; then
-      ## Mount efivarfs if it is not already mounted
-      if (mount | grep /sys/firmware/efi/efivars); then
-        mount -t efivarfs efivarfs /sys/firmware/efi/efivars
-      fi
+	    if [[ -d "/sys/firmware/efi/" ]]; then
+	      ## Mount efivarfs if it is not already mounted
+	      if ! mount | grep -q /sys/firmware/efi/efivars; then
+	        mount -t efivarfs efivarfs /sys/firmware/efi/efivars
+	      fi
       UEFI=1
       echo "UEFI Mode detected"
     else

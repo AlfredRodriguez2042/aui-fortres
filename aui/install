@@ -145,33 +145,42 @@ create_partition_scheme() {
   LVM=0
   print_title "https://wiki.archlinux.org/index.php/Partitioning"
   print_info "Partitioning a hard drive allows one to logically divide the available space into sections that can be accessed independently of one another."
-  print_warning "Maintain Current does not work with LUKS"
-  partition_layouts=("Default" "LVM" "LVM+LUKS" "Maintain Current")
+  print_info "Default del proyecto: cifrado LUKS desde el particionado inicial."
+  print_warning "Sin LUKS no podrás usar luego fido2-unlock/keyfile-usb de fortress para root."
+  print_warning "Maintain Current does not create LUKS; úsalo sólo si ya preparaste el cifrado manualmente."
+  partition_layouts=("LVM+LUKS (default, recommended)" "Default (NO encryption)" "LVM (NO encryption)" "Maintain Current")
   PS3="$prompt1"
   echo -e "Select partition scheme:"
   select OPT in "${partition_layouts[@]}"; do
     partition_layout=$OPT
-    case "$REPLY" in
-    1)
-      create_partition
-      ;;
-    2)
-      create_partition
-      setup_lvm
-      ;;
-    3)
-      create_partition
-      setup_luks
-      setup_lvm
-      ;;
-    4)
-      modprobe dm-mod
-      vgscan &>/dev/null
-      vgchange -ay &>/dev/null
-      ;;
-    *)
-      invalid_option
-      ;;
+    case "$OPT" in
+      "LVM+LUKS (default, recommended)")
+        create_partition
+        setup_luks || continue
+        setup_lvm
+        ;;
+      "Default (NO encryption)")
+        print_danger "Seleccionaste instalación SIN cifrado. Fortress no convertirá root/home a LUKS después."
+        read_input_text "Confirmar instalación SIN cifrado"
+        [[ $OPTION != y ]] && continue
+        create_partition
+        ;;
+      "LVM (NO encryption)")
+        print_danger "Seleccionaste LVM SIN cifrado. Fortress no convertirá root/home a LUKS después."
+        read_input_text "Confirmar instalación SIN cifrado"
+        [[ $OPTION != y ]] && continue
+        create_partition
+        setup_lvm
+        ;;
+      "Maintain Current")
+        print_warning "Maintain Current asume que ya montaste/abriste cualquier LUKS existente manualmente."
+        modprobe dm-mod
+        vgscan &>/dev/null
+        vgchange -ay &>/dev/null
+        ;;
+      *)
+        invalid_option
+        ;;
     esac
     [[ -n $OPT ]] && break
   done
@@ -206,17 +215,21 @@ setup_luks() {
   print_info "The Linux Unified Key Setup or LUKS is a disk-encryption specification created by Clemens Fruhwirth and originally intended for Linux."
   print_danger "\tDo not use this for boot partitions"
   block_list=($(lsblk | grep 'part' | awk '{print "/dev/" substr($1,3)}'))
+  block_list+=("Cancel")
   PS3="$prompt1"
   echo -e "Select partition:"
   select OPT in "${block_list[@]}"; do
     if contains_element "$OPT" "${block_list[@]}"; then
-      cryptsetup --cipher aes-xts-plain64 --key-size 512 --hash sha512 --iter-time 5000 --use-random --verify-passphrase luksFormat "$OPT"
-      cryptsetup open --type luks "$([[ $TRIM -eq 1 ]] && echo '--allow-discards')" "$OPT" crypt
+      cryptsetup --type luks2 --cipher aes-xts-plain64 --key-size 512 --hash sha512 --iter-time 5000 --use-random --verify-passphrase luksFormat "$OPT" || error_msg "luksFormat falló; no se continúa sin cifrado."
+      local open_args=(open --type luks)
+      [[ $TRIM -eq 1 ]] && open_args+=(--allow-discards)
+      cryptsetup "${open_args[@]}" "$OPT" crypt || error_msg "No se pudo abrir el contenedor LUKS; no se continúa sin cifrado."
       LUKS=1
       LUKS_DISK=$(echo "${OPT}" | sed 's/\/dev\///')
       break
     elif [[ $OPT == "Cancel" ]]; then
-      break
+      print_warning "LUKS cancelado; vuelve a elegir particionado o confirma un modo sin cifrado explícito."
+      return 1
     else
       invalid_option
     fi
@@ -390,9 +403,10 @@ format_partitions() {
   }
 
   set_efi_partition() {
-    efi_options=("/boot/efi" "/boot")
+    efi_options=("/boot" "/boot/efi")
     PS3="$prompt1"
     echo -e "Select EFI mountpoint:\n"
+    print_info "Para systemd-boot, usa /boot como ESP. /boot/efi queda reservado para GRUB."
     select EFI_MOUNTPOINT in "${efi_options[@]}"; do
       if contains_element "${EFI_MOUNTPOINT}" "${efi_options[@]}"; then
         break
@@ -470,6 +484,7 @@ select_linux_version() {
   version_list=("linux-zen (tuned, recommended)" "linux (default)" "linux-lts (long term support)" "linux-hardened (security features)")
   PS3="$prompt1"
   print_info "linux-lts se instalará SIEMPRE como kernel de fallback para recovery, además del que selecciones aquí."
+  print_info "Default del proyecto: linux-zen."
   echo -e "Select primary kernel:\n"
   select VERSION in "${version_list[@]}"; do
     if contains_element "$VERSION" "${version_list[@]}"; then
@@ -721,15 +736,27 @@ install_bootloader() {
 # NO usar 'cryptdevice=' (eso es del hook 'encrypt' legacy, NO sd-encrypt).
 _kernel_cmdline() {
   # Construye los parámetros de kernel acorde a sd-encrypt + sd-lvm2.
-  local cmdline="root=/dev/mapper/${ROOT_PART} rw"
+  local root_spec="${ROOT_MOUNTPOINT}"
+  local cmdline
+
+  if [[ -z "$root_spec" ]]; then
+    error_msg "ROOT_MOUNTPOINT vacío; revisa que el paso de particionado montó / correctamente."
+  fi
+
   if [[ $LUKS -eq 1 ]]; then
     local luks_uuid
     luks_uuid=$(blkid -s UUID -o value "/dev/${LUKS_DISK}" 2>/dev/null)
     if [[ -n "$luks_uuid" ]]; then
-      cmdline="rd.luks.name=${luks_uuid}=cryptroot ${cmdline}"
-      cmdline="${cmdline/\/dev\/mapper\/${ROOT_PART}/\/dev\/mapper\/cryptroot}"
+      if [[ $LVM -ne 1 ]]; then
+        root_spec="/dev/mapper/cryptroot"
+      fi
+      cmdline="rd.luks.name=${luks_uuid}=cryptroot root=${root_spec} rw"
+    else
+      cmdline="root=${root_spec} rw"
     fi
     [[ $TRIM -eq 1 ]] && cmdline="rd.luks.options=discard ${cmdline}"
+  else
+    cmdline="root=${root_spec} rw"
   fi
   # nvidia DRM modeset para Wayland (sólo afecta si nvidia drivers se instalan en setup)
   cmdline="${cmdline} nvidia_drm.modeset=1 nvidia_drm.fbdev=1"
@@ -741,15 +768,20 @@ configure_bootloader() {
   systemd-boot)
     print_title "SYSTEMD-BOOT - https://wiki.archlinux.org/title/Systemd-boot"
     print_info "Instalando systemd-boot con entradas duales: kernel primario + linux-lts (recovery)."
-    arch_chroot "bootctl --path=${EFI_MOUNTPOINT} install"
+    if [[ "$EFI_MOUNTPOINT" != "/boot" ]]; then
+      error_msg "systemd-boot requiere que la ESP esté montada en /boot en este installer. Repite EFI mountpoint=/boot o usa GRUB para /boot/efi."
+    fi
+    arch_chroot "bootctl --path=${EFI_MOUNTPOINT} install" || error_msg "bootctl install falló; el sistema no quedaría booteable."
 
-    local cmdline kernels k entry_path img_name
+    local cmdline kernels k entry_path primary_entry_written
     cmdline=$(_kernel_cmdline)
+    primary_entry_written=0
 
     # Detectar kernels instalados
     mapfile -t kernels < <(arch-chroot "${MOUNTPOINT}" bash -c 'ls /boot/vmlinuz-* 2>/dev/null | sed "s|/boot/vmlinuz-||"')
 
     # loader.conf con timeout para acceder al menú
+    mkdir -p "${MOUNTPOINT}${EFI_MOUNTPOINT}/loader/entries"
     cat > "${MOUNTPOINT}${EFI_MOUNTPOINT}/loader/loader.conf" <<EOF
 default  arch.conf
 timeout  3
@@ -769,7 +801,9 @@ initrd   /amd-ucode.img
 initrd   /initramfs-${k}.img
 options  ${cmdline}
 EOF
+      primary_entry_written=1
     done
+    [[ $primary_entry_written -ne 1 ]] && error_msg "No se generó arch.conf para ${KERNEL_PRIMARY}; revisa que ${KERNEL_PRIMARY} quedó instalado en /boot."
 
     # Entry de RESCUE para linux-lts (recovery, red de seguridad)
     if arch_chroot "pacman -Q linux-lts" >/dev/null 2>&1; then
@@ -814,7 +848,7 @@ EOF
     if [[ $UEFI -eq 1 ]]; then
       arch_chroot "grub-install --target=x86_64-efi --efi-directory=${EFI_MOUNTPOINT} --bootloader-id=arch_grub --recheck"
     else
-      arch_chroot "grub-install --target=i386-pc --recheck --debug /dev/${LUKS_DISK%[0-9]*}"
+      arch_chroot "grub-install --target=i386-pc --recheck --debug ${BOOT_MOUNTPOINT}"
     fi
     arch_chroot "grub-mkconfig -o /boot/grub/grub.cfg"
     ;;
@@ -973,6 +1007,7 @@ finish() {
   # Copy del installer al sistema nuevo (referencia, no autoinvocación)
   print_warning "\nA copy of the installer will be placed in /root directory of your new system"
   cp -R "$(pwd)" "${MOUNTPOINT}"/root/
+  print_warning "Si estás en VirtualBox/VM, desmonta la ISO o pon el disco instalado primero en el orden de boot antes de reiniciar."
   read_input_text "Reboot system"
   if [[ $OPTION == y ]]; then
     umount_partitions
