@@ -25,6 +25,7 @@ Run this script after your first boot with archlinux (as root)
 '
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 if [[ -f "$SCRIPT_DIR/lib" ]]; then
   source "$SCRIPT_DIR/lib"
 else
@@ -220,7 +221,15 @@ setup_luks() {
   echo -e "Select partition:"
   select OPT in "${block_list[@]}"; do
     if contains_element "$OPT" "${block_list[@]}"; then
-      cryptsetup --type luks2 --cipher aes-xts-plain64 --key-size 512 --hash sha512 --iter-time 5000 --use-random --verify-passphrase luksFormat "$OPT" || error_msg "luksFormat falló; no se continúa sin cifrado."
+      print_danger "Esto destruirá irreversiblemente los datos y firmas existentes en ${OPT}."
+      printf "%s" "Escribe CIFRAR para confirmar LUKS2 en ${OPT}: "
+      read -r luks_confirm
+      [[ "$luks_confirm" == "CIFRAR" ]] || {
+        print_warning "LUKS cancelado; no se continúa sin cifrado."
+        return 1
+      }
+      wipefs -a "$OPT" || error_msg "wipefs falló en ${OPT}; no se continúa sin cifrado."
+      cryptsetup --batch-mode --type luks2 --cipher aes-xts-plain64 --key-size 512 --hash sha512 --iter-time 5000 --use-random --verify-passphrase luksFormat "$OPT" || error_msg "luksFormat falló; no se continúa sin cifrado."
       local open_args=(open --type luks)
       [[ $TRIM -eq 1 ]] && open_args+=(--allow-discards)
       cryptsetup "${open_args[@]}" "$OPT" crypt || error_msg "No se pudo abrir el contenedor LUKS; no se continúa sin cifrado."
@@ -403,17 +412,8 @@ format_partitions() {
   }
 
   set_efi_partition() {
-    efi_options=("/boot" "/boot/efi")
-    PS3="$prompt1"
-    echo -e "Select EFI mountpoint:\n"
-    print_info "Para systemd-boot, usa /boot como ESP. /boot/efi queda reservado para GRUB."
-    select EFI_MOUNTPOINT in "${efi_options[@]}"; do
-      if contains_element "${EFI_MOUNTPOINT}" "${efi_options[@]}"; then
-        break
-      else
-        invalid_option
-      fi
-    done
+    EFI_MOUNTPOINT="/boot"
+    print_info "UEFI estándar: ESP montada en /boot para systemd-boot."
   }
 
   while true; do
@@ -694,38 +694,10 @@ configure_mkinitcpio() {
 #INSTALL BOOTLOADER {{{
 install_bootloader() {
   print_title "BOOTLOADER - https://wiki.archlinux.org/index.php/Bootloader"
-  print_info "Bootloader carga el kernel y el initramfs. Configuración 2026: kernel params compatibles con sd-encrypt (no usa 'cryptdevice=' legacy)."
-
-  if [[ $UEFI -eq 1 ]]; then
-    print_warning "\tUEFI mode detectado"
-    bootloaders_list=("systemd-boot (recomendado)" "GRUB" "Skip")
-  else
-    print_warning "\tBIOS mode detectado"
-    bootloaders_list=("GRUB" "Skip")
-  fi
-  PS3="$prompt1"
-  echo -e "Install bootloader:\n"
-  select bootloader in "${bootloaders_list[@]}"; do
-    case "$bootloader" in
-      "systemd-boot (recomendado)")
-        # systemd-boot viene con systemd; no requiere pacstrap
-        bootloader="systemd-boot"
-        break
-        ;;
-      "GRUB")
-        pacstrap -K "${MOUNTPOINT}" grub os-prober
-        bootloader="grub"
-        break
-        ;;
-      "Skip")
-        bootloader="skip"
-        break
-        ;;
-      *)
-        invalid_option
-        ;;
-    esac
-  done
+  print_info "AUI-X usa UEFI + systemd-boot. No hay ruta BIOS/legacy."
+  [[ $UEFI -eq 1 ]] || error_msg "UEFI no detectado; no se instala bootloader legacy."
+  bootloader="systemd-boot"
+  print_success "Bootloader seleccionado: systemd-boot"
 }
 #}}}
 #CONFIGURE BOOTLOADER {{{
@@ -768,9 +740,7 @@ configure_bootloader() {
   systemd-boot)
     print_title "SYSTEMD-BOOT - https://wiki.archlinux.org/title/Systemd-boot"
     print_info "Instalando systemd-boot con entradas duales: kernel primario + linux-lts (recovery)."
-    if [[ "$EFI_MOUNTPOINT" != "/boot" ]]; then
-      error_msg "systemd-boot requiere que la ESP esté montada en /boot en este installer. Repite EFI mountpoint=/boot o usa GRUB para /boot/efi."
-    fi
+    [[ "$EFI_MOUNTPOINT" == "/boot" ]] || error_msg "systemd-boot requiere ESP montada en /boot."
     arch_chroot "bootctl --path=${EFI_MOUNTPOINT} install" || error_msg "bootctl install falló; el sistema no quedaría booteable."
 
     local cmdline kernels k entry_path primary_entry_written
@@ -833,28 +803,6 @@ EOF
     pause_function
     $EDITOR "${MOUNTPOINT}${EFI_MOUNTPOINT}/loader/loader.conf"
     $EDITOR "${MOUNTPOINT}${EFI_MOUNTPOINT}/loader/entries/arch.conf"
-    ;;
-
-  grub)
-    print_title "GRUB - https://wiki.archlinux.org/title/GRUB"
-    print_info "Configurando GRUB con kernel params para sd-encrypt (no usa 'cryptdevice=' legacy)."
-
-    local cmdline
-    cmdline=$(_kernel_cmdline)
-
-    # Sustituir GRUB_CMDLINE_LINUX_DEFAULT con los params correctos
-    sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"loglevel=3 quiet ${cmdline}\"|" "${MOUNTPOINT}"/etc/default/grub
-
-    if [[ $UEFI -eq 1 ]]; then
-      arch_chroot "grub-install --target=x86_64-efi --efi-directory=${EFI_MOUNTPOINT} --bootloader-id=arch_grub --recheck"
-    else
-      arch_chroot "grub-install --target=i386-pc --recheck --debug ${BOOT_MOUNTPOINT}"
-    fi
-    arch_chroot "grub-mkconfig -o /boot/grub/grub.cfg"
-    ;;
-
-  skip)
-    print_info "Bootloader skipped. Configurar manualmente antes de reboot."
     ;;
   esac
   pause_function
@@ -1004,9 +952,10 @@ finish() {
   # Red de seguridad antes del reboot final (no es hardening; es recuperabilidad)
   safety_net
 
-  # Copy del installer al sistema nuevo (referencia, no autoinvocación)
-  print_warning "\nA copy of the installer will be placed in /root directory of your new system"
-  cp -R "$(pwd)" "${MOUNTPOINT}"/root/
+  # Copy del repo al sistema nuevo (referencia + setup post-boot)
+  print_warning "\nA copy of this repository will be placed in /root/aui-x on your new system"
+  mkdir -p "${MOUNTPOINT}"/root/aui-x
+  cp -a "${PROJECT_ROOT}/." "${MOUNTPOINT}"/root/aui-x/
   print_warning "Si estás en VirtualBox/VM, desmonta la ISO o pon el disco instalado primero en el orden de boot antes de reiniciar."
   read_input_text "Reboot system"
   if [[ $OPTION == y ]]; then

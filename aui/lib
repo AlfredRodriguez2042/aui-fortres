@@ -144,13 +144,12 @@ Run this script after your first boot with archlinux (as root)
 	      if ! mount | grep -q /sys/firmware/efi/efivars; then
 	        mount -t efivarfs efivarfs /sys/firmware/efi/efivars
 	      fi
-      UEFI=1
-      echo "UEFI Mode detected"
-    else
-      UEFI=0
-      echo "BIOS Mode detected"
-    fi
-  }
+	      UEFI=1
+	      echo "UEFI Mode detected"
+	    else
+	      error_msg "ERROR! AUI-X requiere UEFI. Arranca el ISO en modo UEFI y vuelve a ejecutar el installer."
+	    fi
+	  }
   #}}}
   check_trim() { #{{{
     [[ -n $(hdparm -I /dev/sda | grep TRIM 2> /dev/null) ]] && TRIM=1
