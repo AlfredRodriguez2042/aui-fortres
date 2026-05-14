@@ -120,6 +120,8 @@ umount_partitions() {
   for i in "${mounted_partitions[@]}"; do
     umount "$i"
   done
+  vgchange -an lvm >/dev/null 2>&1 || true
+  cryptsetup close crypt >/dev/null 2>&1 || true
 }
 #}}}
 #SELECT DEVICE {{{
@@ -189,6 +191,7 @@ create_partition_scheme() {
 #}}}
 #SETUP PARTITION{{{
 create_partition() {
+  umount_partitions
   apps_list=("cfdisk" "cgdisk" "fdisk" "gdisk" "parted")
   PS3="$prompt1"
   echo -e "Select partition program:"
@@ -249,30 +252,67 @@ setup_luks() {
 setup_lvm() {
   print_title "LVM - https://wiki.archlinux.org/index.php/LVM"
   print_info "LVM is a logical volume manager for the Linux kernel; it manages disk drives and similar mass-storage devices. "
-  print_warning "Last partition will take 100% of free space left"
+  print_info "Layout recomendado: LV root grande para pacstrap/KDE y LV home con el espacio restante."
   if [[ $LUKS -eq 1 ]]; then
-    pvcreate /dev/mapper/crypt
-    vgcreate lvm /dev/mapper/crypt
+    pvcreate /dev/mapper/crypt || error_msg "pvcreate falló sobre /dev/mapper/crypt"
+    vgcreate lvm /dev/mapper/crypt || error_msg "vgcreate lvm falló"
   else
     block_list=($(lsblk | grep 'part' | awk '{print "/dev/" substr($1,3)}'))
     PS3="$prompt1"
     echo -e "Select partition:"
     select OPT in "${block_list[@]}"; do
       if contains_element "$OPT" "${block_list[@]}"; then
-        pvcreate "$OPT"
-        vgcreate lvm "$OPT"
+        pvcreate "$OPT" || error_msg "pvcreate falló sobre $OPT"
+        vgcreate lvm "$OPT" || error_msg "vgcreate lvm falló"
         break
       else
         invalid_option
       fi
     done
   fi
-  printf "%s" "Enter number of partitions [ex: 2]: " 
+  local lvm_modes=("Guided root+home (recommended)" "Manual")
+  PS3="$prompt1"
+  echo -e "Select LVM layout:\n"
+  select LVM_MODE in "${lvm_modes[@]}"; do
+    case "$LVM_MODE" in
+      "Guided root+home (recommended)")
+        local root_size swap_size ans
+        printf "%s" "Root LV size [default: 30G, recommended real desktop: 60G+]: "
+        read -r root_size
+        root_size="${root_size:-30G}"
+        lvcreate -L "$root_size" lvm -n root || error_msg "No se pudo crear LV root de $root_size. Usa un disco más grande o menor tamaño."
+
+        read -rp "Create swap LV? [y/N]: " ans
+        if [[ "$ans" =~ ^[Yy]$ ]]; then
+          printf "%s" "Swap LV size [default: 4G]: "
+          read -r swap_size
+          swap_size="${swap_size:-4G}"
+          lvcreate -L "$swap_size" lvm -n swap || error_msg "No se pudo crear LV swap de $swap_size."
+        fi
+
+        lvcreate -l 100%FREE lvm -n home || print_warning "No quedó espacio libre para LV home; puedes continuar sólo con root."
+        LVM=1
+        return
+        ;;
+      "Manual")
+        break
+        ;;
+      *)
+        invalid_option
+        ;;
+    esac
+  done
+
+  print_warning "Manual: el último LV toma 100% del espacio restante. Crea primero un LV llamado root."
+  printf "%s" "Enter number of LVs [ex: 2 for root+home, 3 for root+swap+home]: "
   read -r number_partitions
   i=1
   while [[ $i -le $number_partitions ]]; do
-    printf "%s" "Enter $iª partition name [ex: home]: " 
+    printf "%s" "Enter $iª LV name [required first LV: root; ex: root, swap, home]: "
     read -r partition_name
+    if [[ $i -eq 1 && "$partition_name" != "root" ]]; then
+      error_msg "El primer LV debe llamarse root para evitar instalaciones con / demasiado pequeño o mal montado."
+    fi
     if [[ $i -eq $number_partitions ]]; then
       lvcreate -l 100%FREE lvm -n "${partition_name}"
     else
