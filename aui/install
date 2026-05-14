@@ -1,0 +1,1081 @@
+#!/bin/bash
+# FIX THIS ISSUES | NON-ACUTE
+#shellcheck disable=SC1091,SC2001,SC2015,SC2153,SC2154,SC2155,SC2181,SC2207
+
+
+: 'ATTENTION!:
+--------------------------------------------------
+|  Created by helmuthdu <helmuthdu@gmail.com>    |
+|  Shellchecked by uniminin <uniminin@zoho.com>  |
+--------------------------------------------------
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+------------------------------------------------------------------------
+Run this script after your first boot with archlinux (as root)
+'
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [[ -f "$SCRIPT_DIR/lib" ]]; then
+  source "$SCRIPT_DIR/lib"
+else
+  echo "missing file: $SCRIPT_DIR/lib"
+  exit 1
+fi
+
+#ARCHLINUX INSTALL SCRIPTS MODE {{{
+#SELECT KEYMAP {{{
+select_keymap() {
+  print_title "KEYMAP - https://wiki.archlinux.org/index.php/KEYMAP"
+  keymap_list=("ANSI-dvorak" "amiga-de" "amiga-us" "applkey" "atari-de" "atari-se" "atari-uk-falcon" "atari-us" "azerty" "backspace" "bashkir" "be-latin1" "bg-cp1251" "bg-cp855" "bg_bds-cp1251" "bg_bds-utf8" "bg_pho-cp1251" "bg_pho-utf8" "br-abnt" "br-abnt2" "br-latin1-abnt2" "br-latin1-us" "by" "by-cp1251" "bywin-cp1251" "cf" "colemak" "croat" "ctrl" "cz" "cz-cp1250" "cz-lat2" "cz-lat2-prog" "cz-qwertz" "cz-us-qwertz" "de" "de-latin1" "de-latin1-nodeadkeys" "de-mobii" "de_CH-latin1" "de_alt_UTF-8" "defkeymap" "defkeymap_V1.0" "dk" "dk-latin1" "dvorak" "dvorak-ca-fr" "dvorak-es" "dvorak-fr" "dvorak-l" "dvorak-la" "dvorak-programmer" "dvorak-r" "dvorak-ru" "dvorak-sv-a1" "dvorak-sv-a5" "dvorak-uk" "emacs" "emacs2" "es" "es-cp850" "es-olpc" "et" "et-nodeadkeys" "euro" "euro1" "euro2" "fi" "fr" "fr-bepo" "fr-bepo-latin9" "fr-latin1" "fr-latin9" "fr-pc" "fr_CH" "fr_CH-latin1" "gr" "gr-pc" "hu" "hu101" "il" "il-heb" "il-phonetic" "is-latin1" "is-latin1-us" "it" "it-ibm" "it2" "jp106" "kazakh" "keypad" "ky_alt_sh-UTF-8" "kyrgyz" "la-latin1" "lt" "lt.baltic" "lt.l4" "lv" "lv-tilde" "mac-be" "mac-de-latin1" "mac-de-latin1-nodeadkeys" "mac-de_CH" "mac-dk-latin1" "mac-dvorak" "mac-es" "mac-euro" "mac-euro2" "mac-fi-latin1" "mac-fr" "mac-fr_CH-latin1" "mac-it" "mac-pl" "mac-pt-latin1" "mac-se" "mac-template" "mac-uk" "mac-us" "mk" "mk-cp1251" "mk-utf" "mk0" "nl" "nl2" "no" "no-dvorak" "no-latin1" "pc110" "pl" "pl1" "pl2" "pl3" "pl4" "pt-latin1" "pt-latin9" "pt-olpc" "ro" "ro_std" "ro_win" "ru" "ru-cp1251" "ru-ms" "ru-yawerty" "ru1" "ru2" "ru3" "ru4" "ru_win" "ruwin_alt-CP1251" "ruwin_alt-KOI8-R" "ruwin_alt-UTF-8" "ruwin_alt_sh-UTF-8" "ruwin_cplk-CP1251" "ruwin_cplk-KOI8-R" "ruwin_cplk-UTF-8" "ruwin_ct_sh-CP1251" "ruwin_ct_sh-KOI8-R" "ruwin_ct_sh-UTF-8" "ruwin_ctrl-CP1251" "ruwin_ctrl-KOI8-R" "ruwin_ctrl-UTF-8" "se-fi-ir209" "se-fi-lat6" "se-ir209" "se-lat6" "sg" "sg-latin1" "sg-latin1-lk450" "sk-prog-qwerty" "sk-prog-qwertz" "sk-qwerty" "sk-qwertz" "slovene" "sr-cy" "sun-pl" "sun-pl-altgraph" "sundvorak" "sunkeymap" "sunt4-es" "sunt4-fi-latin1" "sunt4-no-latin1" "sunt5-cz-us" "sunt5-de-latin1" "sunt5-es" "sunt5-fi-latin1" "sunt5-fr-latin1" "sunt5-ru" "sunt5-uk" "sunt5-us-cz" "sunt6-uk" "sv-latin1" "tj_alt-UTF8" "tr_f-latin5" "tr_q-latin5" "tralt" "trf" "trf-fgGIod" "trq" "ttwin_alt-UTF-8" "ttwin_cplk-UTF-8" "ttwin_ct_sh-UTF-8" "ttwin_ctrl-UTF-8" "ua" "ua-cp1251" "ua-utf" "ua-utf-ws" "ua-ws" "uk" "unicode" "us" "us-acentos" "wangbe" "wangbe2" "windowkeys")
+  PS3="$prompt1"
+  print_info "The KEYMAP variable is specified in the /etc/rc.conf file. It defines what keymap the keyboard is in the virtual consoles. Keytable files are provided by the kbd package."
+  echo "keymap list in /usr/share/kbd/keymaps"
+  select KEYMAP in "${keymap_list[@]}"; do
+    if contains_element "$KEYMAP" "${keymap_list[@]}"; then
+      loadkeys "$KEYMAP"
+      break
+    else
+      invalid_option
+    fi
+  done
+}
+#}}}
+#DEFAULT EDITOR {{{
+select_editor() {
+  print_title "DEFAULT EDITOR"
+  editors_list=("emacs" "nano" "vi" "vim" "neovim" "zile")
+  PS3="$prompt1"
+  echo -e "Select editor\n"
+  select EDITOR in "${editors_list[@]}"; do
+    if contains_element "$EDITOR" "${editors_list[@]}"; then
+      package_install "$EDITOR"
+      break
+    else
+      invalid_option
+    fi
+  done
+}
+#}}}
+#MIRRORLIST {{{
+configure_mirrorlist() {
+  local countries_code=("AU" "AT" "BD" "BY" "BE" "BA" "BR" "BG" "CA" "CL" "CN" "CO" "HR" "CZ" "DK" "EC" "FI" "FR" "GE" "DE" "GR" "HK" "HU" "IS" "IN" "ID" "IR" "IE" "IL" "IT" "JP" "KZ" "KE" "LV" "LT" "LU" "NL" "NC" "NZ" "MK" "NO" "PY" "PH" "PL" "PT" "RO" "RU" "RS" "SG" "SK" "SI" "ZA" "KR" "ES" "SE" "CH" "TW" "TH" "TR" "UA" "GB" "US" "VN")
+  local countries_name=("Australia" "Austria" "Bangladesh" "Belarus" "Belgium" "Bosnia and Herzegovina" "Brazil" "Bulgaria" "Canada" "Chile" "China" "Colombia" "Croatia" "Czech Republic" "Denmark" "Ecuador" "Finland" "France" "Georgia" "Germany" "Greece" "Hong Kong" "Hungary" "Iceland" "India" "Indonesia" "Iran" "Ireland" "Israel" "Italy" "Japan" "Kazakhstan" "Kenya" "Latvia" "Lithuania" "Luxembourg" "Netherlands" "New Caledonia" "New Zealand" "North Macedonia" "Norway" "Paraguay" "Philippines" "Poland" "Portugal" "Romania" "Russia" "Serbia" "Singapore" "Slovakia" "Slovenia" "South Africa" "South Korea" "Spain" "Sweden" "Switzerland" "Taiwan" "Thailand" "Turkey" "Ukraine" "United Kingdom" "United States" "Viet Nam")
+  country_list() {
+    #`reflector --list-countries | sed 's/[0-9]//g' | sed 's/^/"/g' | sed 's/,.*//g' | sed 's/ *$//g'  | sed 's/$/"/g' | sed -e :a -e '$!N; s/\n/ /; ta'`
+    PS3="$prompt1"
+    echo "Select your country:"
+    select country_name in "${countries_name[@]}"; do
+      if contains_element "$country_name" "${countries_name[@]}"; then
+        country_code=${countries_code[$((REPLY - 1))]}
+        break
+      else
+        invalid_option
+      fi
+    done
+  }
+  print_title "MIRRORLIST - https://wiki.archlinux.org/index.php/Mirrors"
+  print_info "Usando reflector para obtener los mirrors más rápidos y recientes (reemplaza curl+sed+rankmirrors legacy)."
+  OPTION=n
+  while [[ $OPTION != y ]]; do
+    country_list
+    read_input_text "Confirm country: $country_name"
+  done
+
+  # reflector ya está en el live ISO de Arch; si no, lo instalamos
+  if ! command -v reflector >/dev/null 2>&1; then
+    pacman -Sy --noconfirm --needed reflector
+  fi
+
+  # Backup del mirrorlist original
+  [[ ! -f /etc/pacman.d/mirrorlist.orig ]] && cp /etc/pacman.d/mirrorlist /etc/pacman.d/mirrorlist.orig
+
+  # Genera mirrorlist: HTTPS, recientes (<12h), top 20 por velocidad
+  reflector \
+    --country "${country_code}" \
+    --protocol https \
+    --age 12 \
+    --latest 20 \
+    --sort rate \
+    --save /etc/pacman.d/mirrorlist
+
+  chmod +r /etc/pacman.d/mirrorlist
+  $EDITOR /etc/pacman.d/mirrorlist
+}
+#}}}
+#UMOUNT PARTITIONS {{{
+umount_partitions() {
+  mounted_partitions=($(lsblk | grep "${MOUNTPOINT}" | awk '{print $7}' | sort -r))
+  swapoff -a
+  for i in "${mounted_partitions[@]}"; do
+    umount "$i"
+  done
+}
+#}}}
+#SELECT DEVICE {{{
+select_device() {
+  devices_list=($(lsblk -d | awk '{print "/dev/" $1}' | grep 'sd\|hd\|vd\|nvme\|mmcblk'))
+  PS3="$prompt1"
+  echo -e "Attached Devices:\n"
+  lsblk -lnp -I 2,3,8,9,22,34,56,57,58,65,66,67,68,69,70,71,72,91,128,129,130,131,132,133,134,135,259 | awk '{print $1,$4,$6,$7}' | column -t
+  echo -e "\n"
+  echo -e "Select device to partition:\n"
+  select device in "${devices_list[@]}"; do
+    if contains_element "${device}" "${devices_list[@]}"; then
+      break
+    else
+      invalid_option
+    fi
+  done
+  BOOT_MOUNTPOINT=$device
+}
+#}}}
+#CREATE PARTITION SCHEME {{{
+create_partition_scheme() {
+  LUKS=0
+  LVM=0
+  print_title "https://wiki.archlinux.org/index.php/Partitioning"
+  print_info "Partitioning a hard drive allows one to logically divide the available space into sections that can be accessed independently of one another."
+  print_warning "Maintain Current does not work with LUKS"
+  partition_layouts=("Default" "LVM" "LVM+LUKS" "Maintain Current")
+  PS3="$prompt1"
+  echo -e "Select partition scheme:"
+  select OPT in "${partition_layouts[@]}"; do
+    partition_layout=$OPT
+    case "$REPLY" in
+    1)
+      create_partition
+      ;;
+    2)
+      create_partition
+      setup_lvm
+      ;;
+    3)
+      create_partition
+      setup_luks
+      setup_lvm
+      ;;
+    4)
+      modprobe dm-mod
+      vgscan &>/dev/null
+      vgchange -ay &>/dev/null
+      ;;
+    *)
+      invalid_option
+      ;;
+    esac
+    [[ -n $OPT ]] && break
+  done
+}
+#}}}
+#SETUP PARTITION{{{
+create_partition() {
+  apps_list=("cfdisk" "cgdisk" "fdisk" "gdisk" "parted")
+  PS3="$prompt1"
+  echo -e "Select partition program:"
+  select OPT in "${apps_list[@]}"; do
+    if contains_element "$OPT" "${apps_list[@]}"; then
+      select_device
+      case $OPT in
+      parted)
+        parted -a opt "${device}"
+        ;;
+      *)
+        $OPT "${device}"
+        ;;
+      esac
+      break
+    else
+      invalid_option
+    fi
+  done
+}
+#}}}
+#SETUP LUKS {{{
+setup_luks() {
+  print_title "LUKS - https://wiki.archlinux.org/index.php/LUKS"
+  print_info "The Linux Unified Key Setup or LUKS is a disk-encryption specification created by Clemens Fruhwirth and originally intended for Linux."
+  print_danger "\tDo not use this for boot partitions"
+  block_list=($(lsblk | grep 'part' | awk '{print "/dev/" substr($1,3)}'))
+  PS3="$prompt1"
+  echo -e "Select partition:"
+  select OPT in "${block_list[@]}"; do
+    if contains_element "$OPT" "${block_list[@]}"; then
+      cryptsetup --cipher aes-xts-plain64 --key-size 512 --hash sha512 --iter-time 5000 --use-random --verify-passphrase luksFormat "$OPT"
+      cryptsetup open --type luks "$([[ $TRIM -eq 1 ]] && echo '--allow-discards')" "$OPT" crypt
+      LUKS=1
+      LUKS_DISK=$(echo "${OPT}" | sed 's/\/dev\///')
+      break
+    elif [[ $OPT == "Cancel" ]]; then
+      break
+    else
+      invalid_option
+    fi
+  done
+}
+#}}}
+#SETUP LVM {{{
+setup_lvm() {
+  print_title "LVM - https://wiki.archlinux.org/index.php/LVM"
+  print_info "LVM is a logical volume manager for the Linux kernel; it manages disk drives and similar mass-storage devices. "
+  print_warning "Last partition will take 100% of free space left"
+  if [[ $LUKS -eq 1 ]]; then
+    pvcreate /dev/mapper/crypt
+    vgcreate lvm /dev/mapper/crypt
+  else
+    block_list=($(lsblk | grep 'part' | awk '{print "/dev/" substr($1,3)}'))
+    PS3="$prompt1"
+    echo -e "Select partition:"
+    select OPT in "${block_list[@]}"; do
+      if contains_element "$OPT" "${block_list[@]}"; then
+        pvcreate "$OPT"
+        vgcreate lvm "$OPT"
+        break
+      else
+        invalid_option
+      fi
+    done
+  fi
+  printf "%s" "Enter number of partitions [ex: 2]: " 
+  read -r number_partitions
+  i=1
+  while [[ $i -le $number_partitions ]]; do
+    printf "%s" "Enter $iª partition name [ex: home]: " 
+    read -r partition_name
+    if [[ $i -eq $number_partitions ]]; then
+      lvcreate -l 100%FREE lvm -n "${partition_name}"
+    else
+      printf "%s" "Enter $iª partition size [ex: 25G, 200M]: " 
+      read -r partition_size
+      lvcreate -L "${partition_size}" lvm -n "${partition_name}"
+    fi
+    i=$((i + 1))
+  done
+  LVM=1
+}
+#}}}
+#SELECT|FORMAT PARTITIONS {{{
+format_partitions() {
+  print_title "https://wiki.archlinux.org/index.php/File_Systems"
+  print_info "This step will select and format the selected partition where archlinux will be installed"
+  print_danger "\tAll data on the ROOT and SWAP partition will be LOST."
+  i=0
+
+  block_list=($(lsblk | grep 'part\|lvm' | awk '{print substr($1,3)}'))
+
+  # check if there is no partition
+  if [[ ${#block_list[@]} -eq 0 ]]; then
+    echo "No partition found"
+    exit 0
+  fi
+
+  partitions_list=()
+  for OPT in "${block_list[@]}"; do
+    check_lvm=$(echo "$OPT" | grep lvm)
+    if [[ -z $check_lvm ]]; then
+      partitions_list+=("/dev/$OPT")
+    else
+      partitions_list+=("/dev/mapper/$OPT")
+    fi
+  done
+
+  # partitions based on boot system
+  if [[ $UEFI -eq 1 ]]; then
+    partition_name=("root" "EFI" "swap" "another")
+  else
+    partition_name=("root" "swap" "another")
+  fi
+
+  select_filesystem() {
+    filesystems_list=("btrfs" "ext2" "ext3" "ext4" "f2fs" "jfs" "nilfs2" "ntfs" "reiserfs" "vfat" "xfs")
+    PS3="$prompt1"
+    echo -e "Select filesystem:\n"
+    select filesystem in "${filesystems_list[@]}"; do
+      if contains_element "${filesystem}" "${filesystems_list[@]}"; then
+        break
+      else
+        invalid_option
+      fi
+    done
+  }
+
+  disable_partition() {
+    #remove the selected partition from list
+    unset partitions_list["${partition_number}"]
+    partitions_list=("${partitions_list[@]}")
+    #increase i
+    [[ ${partition_name[i]} != another ]] && i=$((i + 1))
+  }
+
+  format_partition() {
+    read_input_text "Confirm format $1 partition"
+    if [[ $OPTION == y ]]; then
+      [[ -z $3 ]] && select_filesystem || filesystem=$3
+      mkfs."${filesystem}" "$1" \
+        $([[ ${filesystem} == xfs || ${filesystem} == btrfs || ${filesystem} == reiserfs ]] && echo "-f") \
+        $([[ ${filesystem} == vfat ]] && echo "-F32") \
+        $([[ $TRIM -eq 1 && ${filesystem} == ext4 ]] && echo "-E discard")
+      fsck "$1"
+      mkdir -p "$2"
+      mount -t "${filesystem}" "$1" "$2"
+      disable_partition
+    fi
+  }
+
+  format_swap_partition() {
+    read_input_text "Confirm format $1 partition"
+    if [[ $OPTION == y ]]; then
+      mkswap "$1"
+      swapon "$1"
+      disable_partition
+    fi
+  }
+
+  create_swap() {
+    swap_options=("partition" "file" "skip")
+    PS3="$prompt1"
+    echo -e "Select ${BYellow}${partition_name[i]}${Reset} filesystem:\n"
+    select OPT in "${swap_options[@]}"; do
+      case "$REPLY" in
+      1)
+        select partition in "${partitions_list[@]}"; do
+          #get the selected number - 1
+          partition_number=$((REPLY - 1))
+          if contains_element "${partition}" "${partitions_list[@]}"; then
+            format_swap_partition "${partition}"
+          fi
+          break
+        done
+        swap_type="partition"
+        break
+        ;;
+      2)
+        total_memory=$(grep MemTotal /proc/meminfo | awk '{print $2/1024}' | sed 's/\..*//')
+        fallocate -l "${total_memory}"M "${MOUNTPOINT}"/swapfile
+        chmod 600 "${MOUNTPOINT}"/swapfile
+        mkswap "${MOUNTPOINT}"/swapfile
+        swapon "${MOUNTPOINT}"/swapfile
+        i=$((i + 1))
+        swap_type="file"
+        break
+        ;;
+      3)
+        i=$((i + 1))
+        swap_type="none"
+        break
+        ;;
+      *)
+        invalid_option
+        ;;
+      esac
+    done
+  }
+
+  check_mountpoint() {
+    if mount | grep "$2"; then
+      echo "Successfully mounted"
+      disable_partition "$1"
+    else
+      echo "WARNING: Not Successfully mounted"
+    fi
+  }
+
+  set_efi_partition() {
+    efi_options=("/boot/efi" "/boot")
+    PS3="$prompt1"
+    echo -e "Select EFI mountpoint:\n"
+    select EFI_MOUNTPOINT in "${efi_options[@]}"; do
+      if contains_element "${EFI_MOUNTPOINT}" "${efi_options[@]}"; then
+        break
+      else
+        invalid_option
+      fi
+    done
+  }
+
+  while true; do
+    PS3="$prompt1"
+    if [[ ${partition_name[i]} == swap ]]; then
+      create_swap
+    else
+      echo -e "Select ${BYellow}${partition_name[i]}${Reset} partition:\n"
+      select partition in "${partitions_list[@]}"; do
+        #get the selected number - 1
+        partition_number=$((REPLY - 1))
+        if contains_element "${partition}" "${partitions_list[@]}"; then
+          case ${partition_name[i]} in
+          root)
+            ROOT_PART=$(echo "${partition}" | sed 's/\/dev\/mapper\///' | sed 's/\/dev\///')
+            ROOT_MOUNTPOINT=${partition}
+            format_partition "${partition}" "${MOUNTPOINT}"
+            ;;
+          EFI)
+            set_efi_partition
+            read_input_text "Format ${partition} partition"
+            if [[ $OPTION == y ]]; then
+              format_partition "${partition}" "${MOUNTPOINT}${EFI_MOUNTPOINT}" vfat
+            else
+              mkdir -p "${MOUNTPOINT}${EFI_MOUNTPOINT}"
+              mount -t vfat "${partition}" "${MOUNTPOINT}${EFI_MOUNTPOINT}"
+              check_mountpoint "${partition}" "${MOUNTPOINT}${EFI_MOUNTPOINT}"
+            fi
+            ;;
+          another)
+            printf "%s" "Mountpoint [ex: /home]:" 
+            read -r directory
+            [[ $directory == "/boot" ]] && BOOT_MOUNTPOINT=$(echo "${partition}" | sed 's/[0-9]//')
+            select_filesystem
+            read_input_text "Format ${partition} partition"
+            if [[ $OPTION == y ]]; then
+              format_partition "${partition}" "${MOUNTPOINT}${directory}" "${filesystem}"
+            else
+              read_input_text "Confirm fs=""${filesystem}"" part=""${partition}"" dir=""${directory}"""
+              if [[ $OPTION == y ]]; then
+                mkdir -p "${MOUNTPOINT}${directory}"
+                mount -t "${filesystem}" "${partition}" "${MOUNTPOINT}""${directory}"
+                check_mountpoint "${partition}" "${MOUNTPOINT}${directory}"
+              fi
+            fi
+            ;;
+          esac
+          break
+        else
+          invalid_option
+        fi
+      done
+    fi
+    #check if there is no partitions left
+    if [[ ${#partitions_list[@]} -eq 0 && ${partition_name[i]} != swap ]]; then
+      break
+    elif [[ ${partition_name[i]} == another ]]; then
+      read_input_text "Configure more partitions"
+      [[ $OPTION != y ]] && break
+    fi
+  done
+  pause_function
+}
+#}}}
+#INSTALL BASE SYSTEM {{{
+select_linux_version() {
+  print_title "LINUX VERSION"
+  version_list=("linux-zen (tuned, recommended)" "linux (default)" "linux-lts (long term support)" "linux-hardened (security features)")
+  PS3="$prompt1"
+  print_info "linux-lts se instalará SIEMPRE como kernel de fallback para recovery, además del que selecciones aquí."
+  echo -e "Select primary kernel:\n"
+  select VERSION in "${version_list[@]}"; do
+    if contains_element "$VERSION" "${version_list[@]}"; then
+      case "$VERSION" in
+        "linux-zen (tuned, recommended)")  KERNEL_PRIMARY="linux-zen" ;;
+        "linux (default)")                 KERNEL_PRIMARY="linux" ;;
+        "linux-lts (long term support)")   KERNEL_PRIMARY="linux-lts" ;;
+        "linux-hardened (security features)") KERNEL_PRIMARY="linux-hardened" ;;
+      esac
+      break
+    else
+      invalid_option
+    fi
+  done
+}
+install_base_system() {
+  print_title "INSTALL BASE SYSTEM"
+  print_info "Refreshing PGP keyring"
+  pacman -Sy --noconfirm archlinux-keyring
+
+  select_linux_version
+
+  # Recovery: linux-lts SIEMPRE instalado como fallback, salvo que sea el primario
+  local kernels=("$KERNEL_PRIMARY" "${KERNEL_PRIMARY}-headers")
+  if [[ "$KERNEL_PRIMARY" != "linux-lts" ]]; then
+    kernels+=("linux-lts" "linux-lts-headers")
+  fi
+
+  print_info "Installing base con paquetes explícitos (paquete 'base', no grupo legacy)"
+
+  # pacstrap -K usa keyring fresco; estándar moderno
+  pacstrap -K "${MOUNTPOINT}" \
+    base base-devel \
+    "${kernels[@]}" \
+    linux-firmware intel-ucode amd-ucode \
+    cryptsetup lvm2 \
+    networkmanager iwd \
+    pipewire pipewire-pulse pipewire-alsa pipewire-jack wireplumber \
+    btrfs-progs dosfstools e2fsprogs xfsprogs f2fs-tools \
+    vim nano man-db man-pages \
+    git sudo \
+    reflector pacman-contrib \
+    iputils inetutils \
+    parted efibootmgr
+
+  [[ $? -ne 0 ]] && error_msg "Installing base system to ${MOUNTPOINT} failed. Check error messages above."
+
+  # Servicios base habilitados para primer boot
+  arch_chroot "systemctl enable NetworkManager.service"
+  arch_chroot "systemctl enable systemd-resolved.service"
+  arch_chroot "systemctl enable systemd-timesyncd.service"
+  arch_chroot "systemctl enable fstrim.timer"
+
+  # NetworkManager: backend iwd (WiFi moderno) + DNS via systemd-resolved
+  mkdir -p "${MOUNTPOINT}"/etc/NetworkManager/conf.d
+  cat > "${MOUNTPOINT}"/etc/NetworkManager/conf.d/dns.conf <<'EOF'
+[main]
+dns=systemd-resolved
+rc-manager=symlink
+EOF
+  cat > "${MOUNTPOINT}"/etc/NetworkManager/conf.d/wifi-backend.conf <<'EOF'
+[device]
+wifi.backend=iwd
+EOF
+  ln -sf /run/systemd/resolve/stub-resolv.conf "${MOUNTPOINT}"/etc/resolv.conf
+
+  # Accesibilidad opcional
+  if is_package_installed "espeakup"; then
+    pacstrap -K "${MOUNTPOINT}" alsa-utils espeakup brltty
+    arch_chroot "systemctl enable espeakup.service"
+  fi
+}
+#}}}
+#CONFIGURE KEYMAP {{{
+configure_keymap() {
+  #ADD KEYMAP TO THE NEW SETUP
+  echo "KEYMAP=$KEYMAP" >"${MOUNTPOINT}"/etc/vconsole.conf
+}
+#}}}
+#CONFIGURE FSTAB {{{
+configure_fstab() {
+  print_title "FSTAB - https://wiki.archlinux.org/index.php/Fstab"
+  print_info "The /etc/fstab file contains static filesystem information. It defines how storage devices and partitions are to be mounted and integrated into the overall system. It is read by the mount command to determine which options to use when mounting a specific partition or partition."
+  if [[ ! -f ${MOUNTPOINT}/etc/fstab.aui ]]; then
+    cp "${MOUNTPOINT}"/etc/fstab "${MOUNTPOINT}"/etc/fstab.aui
+  else
+    cp "${MOUNTPOINT}"/etc/fstab.aui "${MOUNTPOINT}"/etc/fstab
+  fi
+  if [[ $UEFI -eq 1 ]]; then
+    fstab_list=("DEV" "PARTUUID" "LABEL")
+  else
+    fstab_list=("DEV" "UUID" "LABEL")
+  fi
+
+  PS3="$prompt1"
+  echo -e "Configure fstab based on:"
+  select OPT in "${fstab_list[@]}"; do
+    case "$REPLY" in
+    1) genfstab -p "${MOUNTPOINT}" >>"${MOUNTPOINT}"/etc/fstab ;;
+    2)
+      if [[ $UEFI -eq 1 ]]; then
+        genfstab -t PARTUUID -p "${MOUNTPOINT}" >>"${MOUNTPOINT}"/etc/fstab
+      else
+        genfstab -U -p "${MOUNTPOINT}" >>"${MOUNTPOINT}"/etc/fstab
+      fi
+      ;;
+    3) genfstab -L -p "${MOUNTPOINT}" >>"${MOUNTPOINT}"/etc/fstab ;;
+    *) invalid_option ;;
+    esac
+    [[ -n $OPT ]] && break
+  done
+  fstab=$OPT
+  echo "Review your fstab"
+  [[ -f ${MOUNTPOINT}/swapfile ]] && sed -i "s/\\${MOUNTPOINT}//" "${MOUNTPOINT}"/etc/fstab
+  pause_function
+  $EDITOR "${MOUNTPOINT}"/etc/fstab
+}
+#}}}
+#CONFIGURE HOSTNAME {{{
+configure_hostname() {
+  print_title "HOSTNAME - https://wiki.archlinux.org/index.php/HOSTNAME"
+  print_info "A host name is a unique name created to identify a machine on a network.Host names are restricted to alphanumeric characters.\nThe hyphen (-) can be used, but a host name cannot start or end with it. Length is restricted to 63 characters."
+  printf "%s" "Hostname [ex: archlinux]: " 
+  read -r host_name
+  echo "$host_name" >"${MOUNTPOINT}"/etc/hostname
+  if [[ ! -f ${MOUNTPOINT}/etc/hosts.aui ]]; then
+    cp "${MOUNTPOINT}"/etc/hosts "${MOUNTPOINT}"/etc/hosts.aui
+  else
+    cp "${MOUNTPOINT}"/etc/hosts.aui "${MOUNTPOINT}"/etc/hosts
+  fi
+  arch_chroot "sed -i '/127.0.0.1/s/$/ '${host_name}'/' /etc/hosts"
+  arch_chroot "sed -i '/::1/s/$/ '${host_name}'/' /etc/hosts"
+}
+#}}}
+#CONFIGURE TIMEZONE {{{
+configure_timezone() {
+  print_title "TIMEZONE - https://wiki.archlinux.org/index.php/Timezone"
+  print_info "In an operating system the time (clock) is determined by four parts: Time value, Time standard, Time Zone, and DST (Daylight Saving Time if applicable)."
+  OPTION=n
+  while [[ $OPTION != y ]]; do
+    settimezone
+    read_input_text "Confirm timezone (${ZONE}/${SUBZONE})"
+  done
+  arch_chroot "ln -sf /usr/share/zoneinfo/${ZONE}/${SUBZONE} /etc/localtime"
+  arch_chroot "sed -i '/#NTP=/d' /etc/systemd/timesyncd.conf"
+  arch_chroot "sed -i 's/#Fallback//' /etc/systemd/timesyncd.conf"
+  arch_chroot "echo \"FallbackNTP=0.pool.ntp.org 1.pool.ntp.org 0.fr.pool.ntp.org\" >> /etc/systemd/timesyncd.conf"
+  arch_chroot "systemctl enable systemd-timesyncd.service"
+}
+#}}}
+#CONFIGURE HARDWARECLOCK {{{
+configure_hardwareclock() {
+  print_title "HARDWARE CLOCK TIME - https://wiki.archlinux.org/index.php/Internationalization"
+  print_info "This is set in /etc/adjtime. Set the hardware clock mode uniformly between your operating systems on the same machine. Otherwise, they will overwrite the time and cause clock shifts (which can cause time drift correction to be miscalibrated)."
+  hwclock_list=('UTC' 'Localtime')
+  PS3="$prompt1"
+  select OPT in "${hwclock_list[@]}"; do
+    case "$REPLY" in
+    1)
+      arch_chroot "hwclock --systohc --utc"
+      ;;
+    2)
+      arch_chroot "hwclock --systohc --localtime"
+      ;;
+    *) invalid_option ;;
+    esac
+    [[ -n $OPT ]] && break
+  done
+  hwclock=$OPT
+}
+#}}}
+#CONFIGURE LOCALE {{{
+configure_locale() {
+  print_title "LOCALE - https://wiki.archlinux.org/index.php/Locale"
+  print_info "Locales are used in Linux to define which language the user uses. As the locales define the character sets being used as well, setting up the correct locale is especially important if the language contains non-ASCII characters."
+  OPTION=n
+  while [[ $OPTION != y ]]; do
+    setlocale
+    read_input_text "Confirm locale ($LOCALE)"
+  done
+  echo 'LANG="'"$LOCALE_UTF8"'"' >"${MOUNTPOINT}"/etc/locale.conf
+  arch_chroot "sed -i 's/#\('${LOCALE_UTF8}'\)/\1/' /etc/locale.gen"
+  arch_chroot "locale-gen"
+}
+#}}}
+#CONFIGURE MKINITCPIO {{{
+configure_mkinitcpio() {
+  print_title "MKINITCPIO - https://wiki.archlinux.org/index.php/Mkinitcpio"
+  print_info "Configurando initramfs con hooks systemd (sd-encrypt + sd-lvm2). Más robusto y compatible con FIDO2/TPM en fortress."
+
+  # Hooks systemd-based (reemplaza udev/encrypt/lvm2 legacy)
+  # Orden importante: base systemd autodetect microcode modconf kms keyboard sd-vconsole block [sd-encrypt] [sd-lvm2] filesystems fsck
+  local hooks="base systemd autodetect microcode modconf kms keyboard sd-vconsole block"
+  [[ $LUKS -eq 1 ]] && hooks="$hooks sd-encrypt"
+  [[ $LVM -eq 1 ]] && hooks="$hooks sd-lvm2"
+  hooks="$hooks filesystems fsck"
+
+  sed -i "s/^HOOKS=.*/HOOKS=($hooks)/" "${MOUNTPOINT}"/etc/mkinitcpio.conf
+
+  print_info "Permitir revisar el mkinitcpio.conf antes de regenerar:"
+  $EDITOR "${MOUNTPOINT}"/etc/mkinitcpio.conf
+
+  # -P regenera para TODOS los presets instalados (incluye linux-lts de recovery)
+  arch_chroot "mkinitcpio -P"
+}
+#}}}
+#INSTALL BOOTLOADER {{{
+install_bootloader() {
+  print_title "BOOTLOADER - https://wiki.archlinux.org/index.php/Bootloader"
+  print_info "Bootloader carga el kernel y el initramfs. Configuración 2026: kernel params compatibles con sd-encrypt (no usa 'cryptdevice=' legacy)."
+
+  if [[ $UEFI -eq 1 ]]; then
+    print_warning "\tUEFI mode detectado"
+    bootloaders_list=("systemd-boot (recomendado)" "GRUB" "Skip")
+  else
+    print_warning "\tBIOS mode detectado"
+    bootloaders_list=("GRUB" "Skip")
+  fi
+  PS3="$prompt1"
+  echo -e "Install bootloader:\n"
+  select bootloader in "${bootloaders_list[@]}"; do
+    case "$bootloader" in
+      "systemd-boot (recomendado)")
+        # systemd-boot viene con systemd; no requiere pacstrap
+        bootloader="systemd-boot"
+        break
+        ;;
+      "GRUB")
+        pacstrap -K "${MOUNTPOINT}" grub os-prober
+        bootloader="grub"
+        break
+        ;;
+      "Skip")
+        bootloader="skip"
+        break
+        ;;
+      *)
+        invalid_option
+        ;;
+    esac
+  done
+}
+#}}}
+#CONFIGURE BOOTLOADER {{{
+# Para sd-encrypt hooks, los kernel params son:
+#   rd.luks.name=<luks-uuid>=<mapper-name>   (preferido, robusto)
+#   root=/dev/mapper/<mapper-name>
+#   rd.luks.options=discard                  (si TRIM)
+# NO usar 'cryptdevice=' (eso es del hook 'encrypt' legacy, NO sd-encrypt).
+_kernel_cmdline() {
+  # Construye los parámetros de kernel acorde a sd-encrypt + sd-lvm2.
+  local cmdline="root=/dev/mapper/${ROOT_PART} rw"
+  if [[ $LUKS -eq 1 ]]; then
+    local luks_uuid
+    luks_uuid=$(blkid -s UUID -o value "/dev/${LUKS_DISK}" 2>/dev/null)
+    if [[ -n "$luks_uuid" ]]; then
+      cmdline="rd.luks.name=${luks_uuid}=cryptroot ${cmdline}"
+      cmdline="${cmdline/\/dev\/mapper\/${ROOT_PART}/\/dev\/mapper\/cryptroot}"
+    fi
+    [[ $TRIM -eq 1 ]] && cmdline="rd.luks.options=discard ${cmdline}"
+  fi
+  # nvidia DRM modeset para Wayland (sólo afecta si nvidia drivers se instalan en setup)
+  cmdline="${cmdline} nvidia_drm.modeset=1 nvidia_drm.fbdev=1"
+  echo "$cmdline"
+}
+
+configure_bootloader() {
+  case $bootloader in
+  systemd-boot)
+    print_title "SYSTEMD-BOOT - https://wiki.archlinux.org/title/Systemd-boot"
+    print_info "Instalando systemd-boot con entradas duales: kernel primario + linux-lts (recovery)."
+    arch_chroot "bootctl --path=${EFI_MOUNTPOINT} install"
+
+    local cmdline kernels k entry_path img_name
+    cmdline=$(_kernel_cmdline)
+
+    # Detectar kernels instalados
+    mapfile -t kernels < <(arch-chroot "${MOUNTPOINT}" bash -c 'ls /boot/vmlinuz-* 2>/dev/null | sed "s|/boot/vmlinuz-||"')
+
+    # loader.conf con timeout para acceder al menú
+    cat > "${MOUNTPOINT}${EFI_MOUNTPOINT}/loader/loader.conf" <<EOF
+default  arch.conf
+timeout  3
+console-mode max
+editor   no
+EOF
+
+    # Entry primario (kernel zen u otro seleccionado)
+    for k in "${kernels[@]}"; do
+      [[ "$k" == "$KERNEL_PRIMARY" ]] || continue
+      entry_path="${MOUNTPOINT}${EFI_MOUNTPOINT}/loader/entries/arch.conf"
+      cat > "$entry_path" <<EOF
+title    Arch Linux (${k})
+linux    /vmlinuz-${k}
+initrd   /intel-ucode.img
+initrd   /amd-ucode.img
+initrd   /initramfs-${k}.img
+options  ${cmdline}
+EOF
+    done
+
+    # Entry de RESCUE para linux-lts (recovery, red de seguridad)
+    if arch_chroot "pacman -Q linux-lts" >/dev/null 2>&1; then
+      entry_path="${MOUNTPOINT}${EFI_MOUNTPOINT}/loader/entries/arch-lts.conf"
+      cat > "$entry_path" <<EOF
+title    Arch Linux (linux-lts) — RECOVERY
+linux    /vmlinuz-linux-lts
+initrd   /intel-ucode.img
+initrd   /amd-ucode.img
+initrd   /initramfs-linux-lts.img
+options  ${cmdline}
+EOF
+    fi
+
+    # Entry adicional de rescue mode (single user) sobre LTS
+    entry_path="${MOUNTPOINT}${EFI_MOUNTPOINT}/loader/entries/rescue.conf"
+    cat > "$entry_path" <<EOF
+title    Arch Linux RESCUE (single user, LTS)
+linux    /vmlinuz-linux-lts
+initrd   /intel-ucode.img
+initrd   /amd-ucode.img
+initrd   /initramfs-linux-lts.img
+options  ${cmdline} systemd.unit=rescue.target
+EOF
+
+    print_info "Permitir revisar los archivos del bootloader:"
+    pause_function
+    $EDITOR "${MOUNTPOINT}${EFI_MOUNTPOINT}/loader/loader.conf"
+    $EDITOR "${MOUNTPOINT}${EFI_MOUNTPOINT}/loader/entries/arch.conf"
+    ;;
+
+  grub)
+    print_title "GRUB - https://wiki.archlinux.org/title/GRUB"
+    print_info "Configurando GRUB con kernel params para sd-encrypt (no usa 'cryptdevice=' legacy)."
+
+    local cmdline
+    cmdline=$(_kernel_cmdline)
+
+    # Sustituir GRUB_CMDLINE_LINUX_DEFAULT con los params correctos
+    sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"loglevel=3 quiet ${cmdline}\"|" "${MOUNTPOINT}"/etc/default/grub
+
+    if [[ $UEFI -eq 1 ]]; then
+      arch_chroot "grub-install --target=x86_64-efi --efi-directory=${EFI_MOUNTPOINT} --bootloader-id=arch_grub --recheck"
+    else
+      arch_chroot "grub-install --target=i386-pc --recheck --debug /dev/${LUKS_DISK%[0-9]*}"
+    fi
+    arch_chroot "grub-mkconfig -o /boot/grub/grub.cfg"
+    ;;
+
+  skip)
+    print_info "Bootloader skipped. Configurar manualmente antes de reboot."
+    ;;
+  esac
+  pause_function
+}
+#}}}
+#ROOT PASSWORD {{{
+root_password() {
+  print_title "ROOT PASSWORD"
+  print_warning "Enter your new root password"
+  arch_chroot "passwd"
+  pause_function
+}
+#}}}
+#AUR HELPER {{{
+install_aur_helper() {
+  print_title "AUR HELPER"
+  print_info "Instalando paru en Phase 1 para que setup/post-install puedan usar AUR si hace falta."
+
+  local opts=("paru (recomendado)" "Skip")
+  PS3="$prompt1"
+  select OPT in "${opts[@]}"; do
+    case "$OPT" in
+      "paru (recomendado)") AUR_HELPER="paru"; break ;;
+      "Skip") AUR_HELPER=""; return ;;
+      *) invalid_option ;;
+    esac
+  done
+
+  arch_chroot "pacman -S --needed --noconfirm base-devel git sudo"
+
+  arch_chroot "id -u aurbuild >/dev/null 2>&1 || useradd -m -s /bin/bash aurbuild"
+  mkdir -p "${MOUNTPOINT}"/etc/sudoers.d
+  cat > "${MOUNTPOINT}"/etc/sudoers.d/90-aurbuild <<'EOF'
+aurbuild ALL=(ALL) NOPASSWD: /usr/bin/pacman
+EOF
+  chmod 0440 "${MOUNTPOINT}"/etc/sudoers.d/90-aurbuild
+
+  arch_chroot "sudo -u aurbuild bash -lc 'set -e; cd /tmp; rm -rf paru; git clone https://aur.archlinux.org/paru.git; cd paru; makepkg -si --noconfirm'"
+  local ret=$?
+
+  rm -f "${MOUNTPOINT}"/etc/sudoers.d/90-aurbuild
+  arch_chroot "userdel -r aurbuild >/dev/null 2>&1 || true"
+
+  [[ $ret -ne 0 ]] && error_msg "Installing paru failed. Check network/AUR/build output above."
+  print_success "paru instalado en el sistema nuevo."
+  pause_function
+}
+#}}}
+#SAFETY NET DEL INSTALL {{{
+# Red de seguridad pre-reboot: backup header LUKS, snapshot /etc, RECOVERY.md.
+# NO es hardening de seguridad (eso lo hace aui-fortress por separado).
+# Es la red para que el primer boot sea recuperable si algo va mal.
+safety_net() {
+  print_title "RED DE SEGURIDAD DEL INSTALL"
+  print_info "Generando red de seguridad pre-reboot: header LUKS, baseline de /etc, RECOVERY.md."
+
+  mkdir -p "${MOUNTPOINT}"/var/lib/aui-x
+  mkdir -p "${MOUNTPOINT}"/root
+
+  local hostname_val backup_path luks_dev
+  hostname_val=$(cat "${MOUNTPOINT}"/etc/hostname 2>/dev/null || echo "arch")
+
+  # Backup LUKS header (staging temporal en /root del sistema nuevo)
+  if [[ $LUKS -eq 1 ]] && [[ -n "$LUKS_DISK" ]]; then
+    luks_dev="/dev/${LUKS_DISK}"
+    backup_path="${MOUNTPOINT}/root/luks-header-${hostname_val}.bin"
+    print_info "Backup del header LUKS de ${luks_dev}"
+    if cryptsetup luksHeaderBackup "$luks_dev" --header-backup-file "$backup_path"; then
+      chmod 400 "$backup_path"
+      print_success "Header LUKS staged en /root/luks-header-${hostname_val}.bin"
+      print_danger "ADVERTENCIA: este archivo NO sirve si el disco muere."
+      print_danger "Muévelo HOY a dos medios externos cifrados distintos y bórralo de /root tras verificar checksums."
+    else
+      print_warning "luksHeaderBackup falló; revisa manualmente tras reboot."
+    fi
+  else
+    print_info "LUKS no detectado; saltando backup de header."
+  fi
+
+  # Snapshot baseline de /etc (referencia para comparación post-corrupción)
+  print_info "Generando baseline de /etc..."
+  arch_chroot "tar --zstd -cf /var/lib/aui-x/etc-baseline.tar.zst -C / etc 2>/dev/null" || \
+    print_warning "Snapshot de /etc falló (no fatal)."
+
+  # RECOVERY.md con procedimientos
+  cat > "${MOUNTPOINT}"/root/RECOVERY.md <<'RECOVERY_EOF'
+# Recovery — aui-x base install
+
+## Si el sistema no bootea con kernel-zen
+
+En el menú del bootloader selecciona la entrada `linux-lts`. Es el kernel de fallback
+instalado SIEMPRE como red de seguridad.
+
+## Si aui-fortress está instalado y bloquea el boot
+
+1. Boot desde live USB de Arch.
+2. Desbloquea LUKS con la passphrase del slot 0 (siempre intacta):
+       cryptsetup open /dev/<device> cryptroot
+3. Monta el sistema:
+       mount /dev/mapper/cryptroot /mnt && arch-chroot /mnt
+4. Desactiva fortress:
+       aui-fortress rollback --all
+5. Reboot.
+
+## Si pierdes el token FIDO2 o el USB de presence
+
+Usa la passphrase del slot 0 (la que pusiste durante el install). Está SIEMPRE en slot 0;
+ninguna operación de fortress la toca.
+
+## Si pierdes la passphrase del slot 0
+
+Necesitas el backup del header LUKS (luks-header-<hostname>.bin) que generó este install:
+
+    cryptsetup luksHeaderRestore /dev/<device> --header-backup-file luks-header-<hostname>.bin
+
+Luego usa la passphrase original de cuando se creó el header.
+
+Si NO tienes el backup del header → datos perdidos. Por eso debe vivir en dos USB cifrados
+externos, no en /root.
+
+## Comandos útiles
+
+- journalctl -b                                 logs del último boot
+- bootctl list                                  entradas del bootloader systemd-boot
+- cryptsetup luksDump /dev/<device>             estado de slots LUKS
+- lsblk -f                                      filesystems y UUIDs
+- ls /var/lib/aui-x/etc-baseline.tar.zst        snapshot de /etc al terminar el install
+RECOVERY_EOF
+  chmod 600 "${MOUNTPOINT}"/root/RECOVERY.md
+
+  # Verificación de los items
+  print_info "Checklist de red de seguridad:"
+  printf "  %-30s %s\n" "linux-lts instalado:" \
+    "$(arch_chroot 'pacman -Q linux-lts' >/dev/null 2>&1 && echo YES || echo NO)"
+  printf "  %-30s %s\n" "LUKS header staged:" \
+    "$([[ -n "$backup_path" && -f "$backup_path" ]] && echo YES || echo SKIP)"
+  printf "  %-30s %s\n" "/etc baseline:" \
+    "$([[ -f "${MOUNTPOINT}/var/lib/aui-x/etc-baseline.tar.zst" ]] && echo YES || echo NO)"
+  printf "  %-30s %s\n" "RECOVERY.md:" \
+    "$([[ -f "${MOUNTPOINT}/root/RECOVERY.md" ]] && echo YES || echo NO)"
+}
+#}}}
+#FINISH {{{
+finish() {
+  print_title "INSTALL COMPLETED"
+
+  # Red de seguridad antes del reboot final (no es hardening; es recuperabilidad)
+  safety_net
+
+  # Copy del installer al sistema nuevo (referencia, no autoinvocación)
+  print_warning "\nA copy of the installer will be placed in /root directory of your new system"
+  cp -R "$(pwd)" "${MOUNTPOINT}"/root/
+  read_input_text "Reboot system"
+  if [[ $OPTION == y ]]; then
+    umount_partitions
+    reboot
+  fi
+  exit 0
+}
+#}}}
+
+pause_function
+check_boot_system
+check_connection
+check_trim
+pacman -Sy
+while true; do
+  print_title "ARCHLINUX ULTIMATE INSTALL - https://github.com/helmuthdu/aui"
+  echo " 1) $(mainmenu_item "${checklist[1]}" "Select Keymap" "${KEYMAP}")"
+  echo " 2) $(mainmenu_item "${checklist[2]}" "Select Editor" "${EDITOR}")"
+  echo " 3) $(mainmenu_item "${checklist[3]}" "Configure Mirrorlist" "${country_name} (${country_code})")"
+  echo " 4) $(mainmenu_item "${checklist[4]}" "Partition Scheme" "${partition_layout}: ${partition}(${filesystem}) swap(${swap_type})")"
+  echo " 5) $(mainmenu_item "${checklist[5]}" "Install Base System")"
+  echo " 6) $(mainmenu_item "${checklist[6]}" "Configure Fstab" "${fstab}")"
+  echo " 7) $(mainmenu_item "${checklist[7]}" "Configure Hostname" "${host_name}")"
+  echo " 8) $(mainmenu_item "${checklist[8]}" "Configure Timezone" "${ZONE}/${SUBZONE}")"
+  echo " 9) $(mainmenu_item "${checklist[9]}" "Configure Hardware Clock" "${hwclock}")"
+  echo "10) $(mainmenu_item "${checklist[10]}" "Configure Locale" "${LOCALE}")"
+  echo "11) $(mainmenu_item "${checklist[11]}" "Configure Mkinitcpio")"
+  echo "12) $(mainmenu_item "${checklist[12]}" "Install Bootloader" "${bootloader}")"
+  echo "13) $(mainmenu_item "${checklist[13]}" "Root Password")"
+  echo "14) $(mainmenu_item "${checklist[14]}" "AUR helper" "${AUR_HELPER:-}")"
+  echo ""
+  echo " d) Done"
+  echo ""
+  read_input_options
+  for OPT in "${OPTIONS[@]}"; do
+    case "$OPT" in
+    1)
+      select_keymap
+      checklist[1]=1
+      ;;
+    2)
+      select_editor
+      checklist[2]=1
+      ;;
+    3)
+      configure_mirrorlist
+      checklist[3]=1
+      ;;
+    4)
+      umount_partitions
+      create_partition_scheme
+      format_partitions
+      checklist[4]=1
+      ;;
+    5)
+      install_base_system
+      configure_keymap
+      checklist[5]=1
+      ;;
+    6)
+      configure_fstab
+      checklist[6]=1
+      ;;
+    7)
+      configure_hostname
+      checklist[7]=1
+      ;;
+    8)
+      configure_timezone
+      checklist[8]=1
+      ;;
+    9)
+      configure_hardwareclock
+      checklist[9]=1
+      ;;
+    10)
+      configure_locale
+      checklist[10]=1
+      ;;
+    11)
+      configure_mkinitcpio
+      checklist[11]=1
+      ;;
+    12)
+      install_bootloader
+      configure_bootloader
+      checklist[12]=1
+      ;;
+    13)
+      root_password
+      checklist[13]=1
+      ;;
+    14)
+      install_aur_helper
+      checklist[14]=1
+      ;;
+    "d")
+      finish
+      ;;
+    *)
+      invalid_option
+      ;;
+    esac
+  done
+done
+#}}}

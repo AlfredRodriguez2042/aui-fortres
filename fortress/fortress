@@ -1,0 +1,318 @@
+#!/bin/bash
+# aui-x fortress — Programa modular de seguridad para Arch Linux 2026
+#
+# Orchestrator delgado. La lógica vive en modules/<category>/<name>.sh.
+# Cada módulo es independiente y ejecutable directamente.
+#
+# Diseño: cuando esto se convierta en GUI app, el orchestrator es el backend;
+# la UI escanea modules/ y construye botones dinámicamente. La lógica de cada
+# módulo no cambia.
+#
+# CLI:
+#   fortress                          # menú interactivo
+#   fortress status                   # lista módulos activos
+#   fortress verify-recovery          # check precondiciones hardware
+#   fortress apply <module>           # aplica un módulo específico
+#   fortress apply --software-all     # aplica todos los software hardening
+#   fortress harden-config <module>   # previsualiza config/acciones sin escribir
+#   fortress rollback <module>        # desactiva un módulo
+#   fortress rollback --all           # rollback total
+
+#shellcheck disable=SC1090,SC1091,SC2034,SC2154,SC2155
+
+set -uo pipefail
+
+FORTRESS_ROOT="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/common.sh
+source "${FORTRESS_ROOT}/lib/common.sh"
+
+MODULES_DIR="${FORTRESS_ROOT}/modules"
+
+# Orden recomendado de apply para --software-all (cada uno es self-contained pero
+# este orden minimiza fricción: firewall primero porque otros dependen del perfil panic)
+SOFTWARE_ORDER=(
+  firewall
+  kernel-sysctl
+  services
+  ssh
+  apparmor
+  aide
+  auditd
+  tmpfs-noexec
+  sudo-timeout
+  usbguard
+  immutables
+  firejail
+)
+
+# Orden para --hardware-all (raramente usado; los módulos hardware son interactivos)
+HARDWARE_ORDER=(
+  verify-recovery
+  fido2-unlock
+  pam-u2f
+  buskill
+  panic
+)
+
+# =============================================================================
+# MODULE DISCOVERY
+# =============================================================================
+# Devuelve lista de módulos en una categoría: "name|description"
+list_modules() {
+  local category="$1"
+  local mod_file
+  for mod_file in "${MODULES_DIR}/${category}"/*.sh; do
+    [[ -f "$mod_file" ]] || continue
+    local info name desc
+    info=$("$mod_file" describe 2>/dev/null)
+    name=$(echo "$info" | cut -d'|' -f1)
+    desc=$(echo "$info" | cut -d'|' -f3)
+    [[ -n "$name" ]] && echo "${name}|${desc}|${mod_file}"
+  done
+}
+
+# Resuelve el path de un módulo por nombre
+find_module() {
+  local name="$1"
+  local cat mod_file
+  for cat in software hardware; do
+    mod_file="${MODULES_DIR}/${cat}/${name}.sh"
+    [[ -f "$mod_file" ]] && { echo "$mod_file"; return 0; }
+  done
+  return 1
+}
+
+# =============================================================================
+# COMMANDS
+# =============================================================================
+cmd_status() {
+  print_title "FORTRESS STATUS"
+  local cat info name desc mod_file state
+  for cat in software hardware; do
+    echo ""
+    echo "${Bold}${cat^}:${Reset}"
+    while IFS='|' read -r name desc mod_file; do
+      state=$("$mod_file" status 2>/dev/null)
+      case "$state" in
+        active)         printf "  ${BGreen}✓${Reset} %-18s %s\n" "$name" "$desc" ;;
+        inactive)       printf "  ${Red}✗${Reset} %-18s %s\n" "$name" "$desc" ;;
+        not-implemented) printf "  ${Yellow}…${Reset} %-18s %s ${Yellow}(stub)${Reset}\n" "$name" "$desc" ;;
+        *)              printf "  ${Yellow}?${Reset} %-18s %s\n" "$name" "$desc" ;;
+      esac
+    done < <(list_modules "$cat")
+  done
+  echo ""
+}
+
+cmd_apply() {
+  local target="$1"
+  if [[ "$target" == "--software-all" ]]; then
+    print_title "APPLY --software-all"
+    print_warning "Aplicará TODOS los módulos software en orden recomendado."
+    read -rp "Continuar? [y/N]: " ans
+    [[ "$ans" =~ ^[Yy]$ ]] || return
+    local m
+    for m in "${SOFTWARE_ORDER[@]}"; do
+      local mod_file
+      mod_file=$(find_module "$m") || { print_warning "Módulo $m no encontrado; skip"; continue; }
+      "$mod_file" apply || print_warning "Módulo $m falló; continuando"
+    done
+    print_success "Software hardening completo."
+    return
+  fi
+
+  local mod_file
+  mod_file=$(find_module "$target") || { print_danger "Módulo no encontrado: $target"; exit 1; }
+  "$mod_file" apply
+}
+
+cmd_rollback() {
+  local target="$1"
+  if [[ "$target" == "--all" ]]; then
+    print_title "ROLLBACK --all"
+    print_warning "Desactivará TODOS los módulos."
+    read -rp "Continuar? [y/N]: " ans
+    [[ "$ans" =~ ^[Yy]$ ]] || return
+    local m
+    # Rollback en orden inverso al apply, hardware primero
+    for m in "${HARDWARE_ORDER[@]}"; do
+      local mod_file
+      mod_file=$(find_module "$m") || continue
+      "$mod_file" rollback 2>/dev/null || true
+    done
+    local reverse=()
+    local i
+    for ((i=${#SOFTWARE_ORDER[@]}-1; i>=0; i--)); do reverse+=("${SOFTWARE_ORDER[$i]}"); done
+    for m in "${reverse[@]}"; do
+      local mod_file
+      mod_file=$(find_module "$m") || continue
+      "$mod_file" rollback 2>/dev/null || true
+    done
+    print_success "Rollback completo. Sistema vuelve a estado pre-fortress."
+    return
+  fi
+
+  local mod_file
+  mod_file=$(find_module "$target") || { print_danger "Módulo no encontrado: $target"; exit 1; }
+  "$mod_file" rollback
+}
+
+cmd_verify_recovery() {
+  local mod_file
+  mod_file=$(find_module "verify-recovery") || { print_danger "verify-recovery no encontrado"; exit 1; }
+  "$mod_file" verify
+}
+
+cmd_harden_config() {
+  local target="$1"
+  local mod_file
+  mod_file=$(find_module "$target") || { print_danger "Módulo no encontrado: $target"; exit 1; }
+  "$mod_file" config
+}
+
+# =============================================================================
+# INTERACTIVE MENU
+# =============================================================================
+build_menu() {
+  local cat info name desc mod_file state idx=1
+  declare -gA MENU_MAP=()
+  for cat in software hardware; do
+    echo ""
+    echo "${Bold}${cat^} modules:${Reset}"
+    while IFS='|' read -r name desc mod_file; do
+      state=$("$mod_file" status 2>/dev/null)
+      local marker
+      case "$state" in
+        active)          marker="${BGreen}✓${Reset}" ;;
+        inactive)        marker="${Red}✗${Reset}" ;;
+        not-implemented) marker="${Yellow}…${Reset}" ;;
+        *)               marker="${Yellow}?${Reset}" ;;
+      esac
+      printf "  %2d) %s  %-18s %s\n" "$idx" "$marker" "$name" "$desc"
+      MENU_MAP[$idx]="$mod_file"
+      idx=$((idx+1))
+    done < <(list_modules "$cat")
+  done
+}
+
+interactive_menu() {
+  while true; do
+    print_title "AUI-X FORTRESS — Programa modular de seguridad"
+    build_menu
+    echo ""
+    echo "${Bold}Utils:${Reset}"
+    echo "   s) status            (resumen detallado)"
+    echo "   v) verify-recovery   (precondición módulos hardware)"
+    echo "   A) apply --software-all"
+    echo "   R) rollback --all"
+    echo "   q) quit"
+    echo ""
+    read -rp "Opción: " choice
+    case "$choice" in
+      s|S) cmd_status; pause_function ;;
+      v|V) cmd_verify_recovery; pause_function ;;
+      A)   cmd_apply "--software-all"; pause_function ;;
+      R)   cmd_rollback "--all"; pause_function ;;
+      q|Q) print_info "Saliendo."; exit 0 ;;
+      ''|*[!0-9]*) invalid_option; pause_function ;;
+      *)
+        local mod_file="${MENU_MAP[$choice]:-}"
+        if [[ -z "$mod_file" ]]; then
+          invalid_option; pause_function; continue
+        fi
+        local name state
+        name=$("$mod_file" describe | cut -d'|' -f1)
+        state=$("$mod_file" status 2>/dev/null)
+        if [[ "$state" == "active" ]]; then
+          read -rp "Módulo '$name' está activo. [r]ollback / [R]e-apply / [s]kip: " act
+          case "$act" in
+            r|R) "$mod_file" rollback ;;
+            re|Re) "$mod_file" rollback; "$mod_file" apply ;;
+            *) ;;
+          esac
+        else
+          "$mod_file" apply
+        fi
+        pause_function
+        ;;
+    esac
+  done
+}
+
+# =============================================================================
+# ENTRY POINT
+# =============================================================================
+check_archlinux
+
+# Commands que requieren root: apply, rollback, verify-recovery, menú interactivo
+# Commands read-only (no root): status, list, harden-config, help, describe
+
+if [[ $# -eq 0 ]]; then
+  check_root
+  interactive_menu
+  exit 0
+fi
+
+case "$1" in
+  status)
+    cmd_status
+    ;;
+  verify-recovery)
+    check_root
+    cmd_verify_recovery
+    ;;
+  apply)
+    check_root
+    shift
+    [[ $# -eq 0 ]] && { echo "Uso: fortress apply <module|--software-all>"; exit 1; }
+    cmd_apply "$1"
+    ;;
+  rollback)
+    check_root
+    shift
+    [[ $# -eq 0 ]] && { echo "Uso: fortress rollback <module|--all>"; exit 1; }
+    cmd_rollback "$1"
+    ;;
+  harden-config)
+    shift
+    [[ $# -eq 0 ]] && { echo "Uso: fortress harden-config <module>"; exit 1; }
+    cmd_harden_config "$1"
+    ;;
+  list)
+    echo "Software:"
+    list_modules software | while IFS='|' read -r n d _; do printf "  %-18s %s\n" "$n" "$d"; done
+    echo "Hardware:"
+    list_modules hardware | while IFS='|' read -r n d _; do printf "  %-18s %s\n" "$n" "$d"; done
+    ;;
+  -h|--help|help)
+    cat <<EOF
+Usage: fortress [command] [args]
+
+Commands:
+  (no args)                 Menú interactivo
+  status                    Lista módulos activos/inactivos
+  list                      Lista módulos disponibles
+  verify-recovery           Checks de precondiciones para módulos hardware
+  apply <module>            Aplica un módulo específico
+  apply --software-all      Aplica todos los módulos software en orden
+  harden-config <module>    Muestra config/acciones que aplicaría un módulo
+  rollback <module>         Desactiva un módulo
+  rollback --all            Rollback total a estado pre-fortress
+
+Module names:
+  Software: firewall, kernel-sysctl, ssh, services, apparmor, firejail,
+            aide, auditd, tmpfs-noexec, immutables, usbguard, sudo-timeout
+  Hardware: verify-recovery, fido2-unlock, keyfile-usb, pam-u2f, buskill,
+            panic, triple-state (v2 stub)
+
+Cada módulo es también ejecutable directamente:
+  ./modules/software/firewall.sh apply
+  ./modules/hardware/buskill.sh status
+EOF
+    ;;
+  *)
+    echo "Comando no reconocido: $1"
+    echo "Usa 'fortress help' para ver opciones."
+    exit 1
+    ;;
+esac
