@@ -1,28 +1,5 @@
 #!/bin/bash
-# FIX THIS ISSUES | NON-ACUTE
-#shellcheck disable=SC1091,SC2001,SC2015,SC2153,SC2154,SC2155,SC2181,SC2207
 
-
-: 'ATTENTION!:
---------------------------------------------------
-|  Created by helmuthdu <helmuthdu@gmail.com>    |
-|  Shellchecked by uniminin <uniminin@zoho.com>  |
---------------------------------------------------
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
-------------------------------------------------------------------------
-Run this script after your first boot with archlinux (as root)
-'
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -272,12 +249,14 @@ setup_lvm() {
   fi
   local lvm_modes=("Guided root+home (recommended)" "Manual")
   PS3="$prompt1"
+  print_info "Guiado crea LV root para / y LV home para /home. En el siguiente paso se usará /dev/mapper/lvm-root como root, no la partición física cifrada."
   echo -e "Select LVM layout:\n"
   select LVM_MODE in "${lvm_modes[@]}"; do
     case "$LVM_MODE" in
       "Guided root+home (recommended)")
         local root_size swap_size
-        printf "%s" "Root LV size [default: 30G, recommended real desktop: 60G+]: "
+        print_info "Tamaño de root (/): Enter usa 30G como mínimo cómodo. Para uso real con KDE/juegos/cache, 60G+ es más recomendable."
+        printf "%s" "Root LV size [default: 30G, recommended desktop: 60G+]: "
         read -r root_size
         root_size="${root_size:-30G}"
         lvcreate -L "$root_size" lvm -n root || error_msg "No se pudo crear LV root de $root_size. Usa un disco más grande o menor tamaño."
@@ -330,6 +309,7 @@ format_partitions() {
   print_title "https://wiki.archlinux.org/index.php/File_Systems"
   print_info "This step will select and format the selected partition where archlinux will be installed"
   print_danger "\tAll data on the ROOT and SWAP partition will be LOST."
+  [[ $LVM -eq 1 ]] && print_info "Modo LVM detectado: root/home/swap se eligen desde /dev/mapper/lvm-*. Las particiones físicas sólo se muestran cuando corresponden, como la ESP para /boot."
   i=0
 
   block_list=($(lsblk | grep 'part\|lvm' | awk '{print substr($1,3)}'))
@@ -349,6 +329,7 @@ format_partitions() {
       partitions_list+=("/dev/mapper/$OPT")
     fi
   done
+  role_partitions=()
 
   # partitions based on boot system
   if [[ $UEFI -eq 1 ]]; then
@@ -370,10 +351,84 @@ format_partitions() {
     done
   }
 
+  is_luks_backing_partition() {
+    [[ $LUKS -eq 1 && "$1" == "/dev/${LUKS_DISK}" ]]
+  }
+
+  has_lsblk_children() {
+    [[ "$(lsblk -ln "$1" 2>/dev/null | wc -l)" -gt 1 ]]
+  }
+
+  is_lvm_lv() {
+    [[ "$1" == /dev/mapper/lvm-* ]]
+  }
+
+  is_physical_leaf_partition() {
+    [[ "$1" != /dev/mapper/* ]] && ! is_luks_backing_partition "$1" && ! has_lsblk_children "$1"
+  }
+
+  build_partition_candidates() {
+    local role="$1"
+    local partition_candidate
+    role_partitions=()
+    for partition_candidate in "${partitions_list[@]}"; do
+      case "$role" in
+        root)
+          if [[ $LVM -eq 1 ]]; then
+            [[ "$partition_candidate" == "/dev/mapper/lvm-root" ]] && role_partitions+=("$partition_candidate")
+          elif ! is_luks_backing_partition "$partition_candidate"; then
+            role_partitions+=("$partition_candidate")
+          fi
+          ;;
+        EFI)
+          is_physical_leaf_partition "$partition_candidate" && role_partitions+=("$partition_candidate")
+          ;;
+        swap)
+          if [[ $LVM -eq 1 ]]; then
+            [[ "$partition_candidate" == "/dev/mapper/lvm-swap" ]] && role_partitions+=("$partition_candidate")
+          elif ! is_luks_backing_partition "$partition_candidate"; then
+            role_partitions+=("$partition_candidate")
+          fi
+          ;;
+        another)
+          if [[ $LVM -eq 1 ]]; then
+            is_lvm_lv "$partition_candidate" &&
+              [[ "$partition_candidate" != "/dev/mapper/lvm-root" ]] &&
+              [[ "$partition_candidate" != "/dev/mapper/lvm-swap" ]] &&
+              role_partitions+=("$partition_candidate")
+          elif ! is_luks_backing_partition "$partition_candidate"; then
+            role_partitions+=("$partition_candidate")
+          fi
+          ;;
+      esac
+    done
+  }
+
+  print_partition_hint() {
+    case "$1" in
+      root)
+        [[ $LVM -eq 1 ]] && print_info "Root (/): elige /dev/mapper/lvm-root, el LV creado para el sistema base."
+        ;;
+      EFI)
+        print_info "EFI: elige la ESP sin cifrar (normalmente la partición pequeña FAT32). AUI-X la montará en /boot para systemd-boot."
+        ;;
+      swap)
+        print_info "Swap: elige un LV/partición swap dedicado, crea swapfile, o salta swap si usarás ZRAM después."
+        ;;
+      another)
+        [[ $LVM -eq 1 ]] && print_info "Extra: elige /dev/mapper/lvm-home para montarlo como /home."
+        ;;
+    esac
+  }
+
   disable_partition() {
-    #remove the selected partition from list
-    unset partitions_list["${partition_number}"]
-    partitions_list=("${partitions_list[@]}")
+    local selected_partition="$1"
+    local remaining_partitions=()
+    local current_partition
+    for current_partition in "${partitions_list[@]}"; do
+      [[ "$current_partition" != "$selected_partition" ]] && remaining_partitions+=("$current_partition")
+    done
+    partitions_list=("${remaining_partitions[@]}")
     #increase i
     [[ ${partition_name[i]} != another ]] && i=$((i + 1))
   }
@@ -389,7 +444,7 @@ format_partitions() {
       fsck "$1"
       mkdir -p "$2"
       mount -t "${filesystem}" "$1" "$2"
-      disable_partition
+      disable_partition "$1"
     fi
   }
 
@@ -398,29 +453,36 @@ format_partitions() {
     if [[ $OPTION == y ]]; then
       mkswap "$1"
       swapon "$1"
-      disable_partition
+      disable_partition "$1"
     fi
   }
 
   create_swap() {
-    swap_options=("partition" "file" "skip")
+    build_partition_candidates "swap"
+    if [[ ${#role_partitions[@]} -gt 0 ]]; then
+      swap_options=("partition" "file" "skip")
+    else
+      print_info "No se detectó LV/partición swap dedicada. Puedes crear swapfile o saltar swap."
+      swap_options=("file" "skip")
+    fi
+    print_partition_hint "swap"
     PS3="$prompt1"
     echo -e "Select ${BYellow}${partition_name[i]}${Reset} filesystem:\n"
     select OPT in "${swap_options[@]}"; do
-      case "$REPLY" in
-      1)
-        select partition in "${partitions_list[@]}"; do
-          #get the selected number - 1
-          partition_number=$((REPLY - 1))
+      case "$OPT" in
+      partition)
+        select partition in "${role_partitions[@]}"; do
           if contains_element "${partition}" "${partitions_list[@]}"; then
             format_swap_partition "${partition}"
+            break
+          else
+            invalid_option
           fi
-          break
         done
         swap_type="partition"
         break
         ;;
-      2)
+      file)
         total_memory=$(grep MemTotal /proc/meminfo | awk '{print $2/1024}' | sed 's/\..*//')
         fallocate -l "${total_memory}"M "${MOUNTPOINT}"/swapfile
         chmod 600 "${MOUNTPOINT}"/swapfile
@@ -430,7 +492,7 @@ format_partitions() {
         swap_type="file"
         break
         ;;
-      3)
+      skip)
         i=$((i + 1))
         swap_type="none"
         break
@@ -461,10 +523,17 @@ format_partitions() {
     if [[ ${partition_name[i]} == swap ]]; then
       create_swap
     else
+      build_partition_candidates "${partition_name[i]}"
+      if [[ ${#role_partitions[@]} -eq 0 ]]; then
+        if [[ ${partition_name[i]} == another ]]; then
+          print_info "No quedan particiones/LVs seguros para montar como extra."
+          break
+        fi
+        error_msg "No hay candidatos seguros para ${partition_name[i]}. Revisa el particionado/LVM antes de continuar."
+      fi
+      print_partition_hint "${partition_name[i]}"
       echo -e "Select ${BYellow}${partition_name[i]}${Reset} partition:\n"
-      select partition in "${partitions_list[@]}"; do
-        #get the selected number - 1
-        partition_number=$((REPLY - 1))
+      select partition in "${role_partitions[@]}"; do
         if contains_element "${partition}" "${partitions_list[@]}"; then
           case ${partition_name[i]} in
           root)
@@ -484,8 +553,13 @@ format_partitions() {
             fi
             ;;
           another)
-            printf "%s" "Mountpoint [ex: /home]:" 
+            if [[ "$partition" == "/dev/mapper/lvm-home" ]]; then
+              printf "%s" "Mountpoint [default: /home]: "
+            else
+              printf "%s" "Mountpoint [ex: /home]: "
+            fi
             read -r directory
+            [[ -z "$directory" && "$partition" == "/dev/mapper/lvm-home" ]] && directory="/home"
             [[ $directory == "/boot" ]] && BOOT_MOUNTPOINT=$(echo "${partition}" | sed 's/[0-9]//')
             select_filesystem
             read_input_text "Format ${partition} partition"
@@ -518,40 +592,102 @@ format_partitions() {
   pause_function
 }
 #}}}
-#INSTALL BASE SYSTEM {{{
-select_linux_version() {
-  print_title "LINUX VERSION"
-  version_list=("linux-zen (tuned, recommended)" "linux (default)" "linux-lts (long term support)" "linux-hardened (security features)")
-  PS3="$prompt1"
-  print_info "linux-lts se instalará SIEMPRE como kernel de fallback para recovery, además del que selecciones aquí."
-  print_info "Default del proyecto: linux-zen."
-  echo -e "Select primary kernel:\n"
-  select VERSION in "${version_list[@]}"; do
-    if contains_element "$VERSION" "${version_list[@]}"; then
-      case "$VERSION" in
-        "linux-zen (tuned, recommended)")  KERNEL_PRIMARY="linux-zen" ;;
-        "linux (default)")                 KERNEL_PRIMARY="linux" ;;
-        "linux-lts (long term support)")   KERNEL_PRIMARY="linux-lts" ;;
-        "linux-hardened (security features)") KERNEL_PRIMARY="linux-hardened" ;;
-      esac
-      break
-    else
-      invalid_option
-    fi
-  done
+#ZEN PERFORMANCE/SECURITY BASELINE {{{
+# Escribe configs declarativas en el sistema instalado. Idempotente (sobrescribe).
+# Objetivo: aprovechar linux-zen (BBR3, EEVDF/BORE, PREEMPT_DYNAMIC, PSI) sin
+# comprometer la postura por defecto del kernel en mitigaciones de CPU.
+configure_zen_tuning() {
+  print_info "Aplicando baseline de tuning para linux-zen (sysctl, udev, modprobe, zram)."
+
+  mkdir -p "${MOUNTPOINT}/etc/sysctl.d" \
+           "${MOUNTPOINT}/etc/udev/rules.d" \
+           "${MOUNTPOINT}/etc/modprobe.d" \
+           "${MOUNTPOINT}/etc/systemd" \
+           "${MOUNTPOINT}/etc/systemd/resolved.conf.d"
+
+  # Red: BBR (zen trae BBR3) + fair queueing → mejor latencia y throughput
+  cat > "${MOUNTPOINT}/etc/sysctl.d/99-zen-net.conf" <<'EOF'
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_mtu_probing = 1
+net.core.netdev_max_backlog = 16384
+net.core.somaxconn = 8192
+EOF
+
+  # VM/FS: defaults sanos para desktop con zram presente
+  cat > "${MOUNTPOINT}/etc/sysctl.d/99-zen-vm.conf" <<'EOF'
+vm.swappiness = 100
+vm.watermark_boost_factor = 0
+vm.watermark_scale_factor = 125
+vm.vfs_cache_pressure = 50
+vm.dirty_bytes = 268435456
+vm.dirty_background_bytes = 67108864
+fs.inotify.max_user_watches = 524288
+fs.inotify.max_user_instances = 8192
+kernel.split_lock_mitigate = 0
+EOF
+
+  # I/O schedulers por tipo de dispositivo (multi-queue aware)
+  cat > "${MOUNTPOINT}/etc/udev/rules.d/60-ioschedulers.rules" <<'EOF'
+# NVMe: dejar al hardware (multi-queue nativo)
+ACTION=="add|change", KERNEL=="nvme[0-9]n[0-9]", ATTR{queue/scheduler}="none"
+# SSD SATA / MMC: deadline multi-queue
+ACTION=="add|change", KERNEL=="sd[a-z]|mmcblk[0-9]*", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="mq-deadline"
+# HDD rotacional: BFQ (fairness por proceso)
+ACTION=="add|change", KERNEL=="sd[a-z]", ATTR{queue/rotational}=="1", ATTR{queue/scheduler}="bfq"
+EOF
+
+  # Module tweaks: silenciar PC speaker, NVMe suspend robusto, audio sin pops
+  cat > "${MOUNTPOINT}/etc/modprobe.d/zen-tuning.conf" <<'EOF'
+blacklist pcspkr
+blacklist snd_pcsp
+options nvme_core default_ps_max_latency_us=5500
+options snd_hda_intel power_save=1 power_save_controller=Y
+EOF
+
+  # ZRAM swap (zstd, mitad de RAM con tope 8G): preferible a swapfile/swap-LV
+  # para no exponer claves de sesión a disco. Coexiste con swap físico si el
+  # usuario lo configuró (zram con prio 100 se usa primero).
+  cat > "${MOUNTPOINT}/etc/systemd/zram-generator.conf" <<'EOF'
+[zram0]
+zram-size = min(ram / 2, 8192)
+compression-algorithm = zstd
+swap-priority = 100
+fs-type = swap
+EOF
+
+  # systemd-resolved: DNSSEC y DoT oportunista, resolvers públicos como fallback
+  cat > "${MOUNTPOINT}/etc/systemd/resolved.conf.d/10-aui-x.conf" <<'EOF'
+[Resolve]
+DNSSEC=allow-downgrade
+DNSOverTLS=opportunistic
+Cache=yes
+FallbackDNS=1.1.1.1 9.9.9.9 2606:4700:4700::1111 2620:fe::fe
+EOF
 }
+#}}}
+#INSTALL BASE SYSTEM {{{
+# AUI-X pin: linux-zen (primary, BORE+BBR3+PREEMPT_DYNAMIC) + linux-lts (real fallback).
+# linux plain queda fuera a propósito: rebasea al mismo ritmo que zen, no protege ante
+# regresiones upstream. linux-hardened queda fuera por incompatibilidades recurrentes
+# con stacks GPU propietarios y módulos DKMS.
 install_base_system() {
   print_title "INSTALL BASE SYSTEM"
   print_info "Refreshing PGP keyring"
+
+  # NTP antes de tocar firmas: evita rechazo de paquetes por reloj desincronizado en VMs/live
+  timedatectl set-ntp true 2>/dev/null || true
+
   pacman -Sy --noconfirm archlinux-keyring
 
-  select_linux_version
+  KERNEL_PRIMARY="linux-zen"
+  print_info "Kernels: linux-zen (primario, performance) + linux-lts (fallback recovery)."
+  local kernels=("linux-zen" "linux-zen-headers" "linux-lts" "linux-lts-headers")
 
-  # Recovery: linux-lts SIEMPRE instalado como fallback, salvo que sea el primario
-  local kernels=("$KERNEL_PRIMARY" "${KERNEL_PRIMARY}-headers")
-  if [[ "$KERNEL_PRIMARY" != "linux-lts" ]]; then
-    kernels+=("linux-lts" "linux-lts-headers")
-  fi
+  # Microcode sólo en x86_64 (no existe para aarch64/otras)
+  local ucode_pkgs=()
+  [[ "$ARCHI" == "x86_64" ]] && ucode_pkgs=("intel-ucode" "amd-ucode")
 
   print_info "Installing base con paquetes explícitos (paquete 'base', no grupo legacy)"
 
@@ -559,7 +695,7 @@ install_base_system() {
   pacstrap -K "${MOUNTPOINT}" \
     base base-devel \
     "${kernels[@]}" \
-    linux-firmware intel-ucode amd-ucode \
+    linux-firmware "${ucode_pkgs[@]}" \
     cryptsetup lvm2 \
     networkmanager iwd \
     pipewire pipewire-pulse pipewire-alsa pipewire-jack wireplumber \
@@ -567,6 +703,7 @@ install_base_system() {
     vim nano man-db man-pages \
     git sudo \
     reflector pacman-contrib \
+    zram-generator \
     iputils inetutils \
     parted efibootmgr
 
@@ -577,6 +714,12 @@ install_base_system() {
   arch_chroot "systemctl enable systemd-resolved.service"
   arch_chroot "systemctl enable systemd-timesyncd.service"
   arch_chroot "systemctl enable fstrim.timer"
+  arch_chroot "systemctl enable systemd-oomd.service"
+  arch_chroot "systemctl enable paccache.timer"
+  arch_chroot "systemctl enable reflector.timer" 2>/dev/null || true
+
+  # Zen performance/security baseline (sysctl, udev, modprobe, zram, resolved)
+  configure_zen_tuning
 
   # NetworkManager: backend iwd (WiFi moderno) + DNS via systemd-resolved
   mkdir -p "${MOUNTPOINT}"/etc/NetworkManager/conf.d
@@ -724,10 +867,17 @@ configure_mkinitcpio() {
 
   sed -i "s/^HOOKS=.*/HOOKS=($hooks)/" "${MOUNTPOINT}"/etc/mkinitcpio.conf
 
-  print_info "Permitir revisar el mkinitcpio.conf antes de regenerar:"
-  $EDITOR "${MOUNTPOINT}"/etc/mkinitcpio.conf
+  # zstd paralelo: initramfs más chico y descompresión usando todos los cores
+  sed -i 's/^#\?COMPRESSION=.*/COMPRESSION="zstd"/' "${MOUNTPOINT}"/etc/mkinitcpio.conf
+  if grep -q '^#\?COMPRESSION_OPTIONS=' "${MOUNTPOINT}"/etc/mkinitcpio.conf; then
+    sed -i 's/^#\?COMPRESSION_OPTIONS=.*/COMPRESSION_OPTIONS=(-19 -T0)/' "${MOUNTPOINT}"/etc/mkinitcpio.conf
+  else
+    echo 'COMPRESSION_OPTIONS=(-19 -T0)' >> "${MOUNTPOINT}"/etc/mkinitcpio.conf
+  fi
 
-  # -P regenera para TODOS los presets instalados (incluye linux-lts de recovery)
+  print_info "mkinitcpio.conf actualizado (HOOKS=$hooks, COMPRESSION=zstd -19 -T0). Saltando editor interactivo; revisa con: vim ${MOUNTPOINT}/etc/mkinitcpio.conf"
+
+  # -P regenera para TODOS los presets instalados (zen + linux-lts recovery)
   arch_chroot "mkinitcpio -P"
 }
 #}}}
@@ -748,6 +898,14 @@ install_bootloader() {
 # NO usar 'cryptdevice=' (eso es del hook 'encrypt' legacy, NO sd-encrypt).
 _kernel_cmdline() {
   # Construye los parámetros de kernel acorde a sd-encrypt + sd-lvm2.
+  # Mitigations queda en default del kernel (auto): explícito nada → postura responsable.
+  # Tuning añadido (zen-aware):
+  #   amd_pstate=active      → driver moderno en AMD Zen2+ (no-op en Intel)
+  #   split_lock_detect=off  → compat con Wine/anti-cheat (kill por split lock = crash)
+  #   nowatchdog             → drop kernel watchdog (latencia + batería)
+  #   quiet loglevel=3       → boot limpio; journalctl conserva todo
+  # Nota: nvidia_drm.modeset NO se añade aquí; lo escribe setup en /etc/modprobe.d/
+  # cuando se instala el driver, evitando flags fantasma sin GPU NVIDIA.
   local root_spec="${ROOT_MOUNTPOINT}"
   local cmdline
 
@@ -770,8 +928,8 @@ _kernel_cmdline() {
   else
     cmdline="root=${root_spec} rw"
   fi
-  # nvidia DRM modeset para Wayland (sólo afecta si nvidia drivers se instalan en setup)
-  cmdline="${cmdline} nvidia_drm.modeset=1 nvidia_drm.fbdev=1"
+
+  cmdline="${cmdline} amd_pstate=active split_lock_detect=off nowatchdog quiet loglevel=3"
   echo "$cmdline"
 }
 
@@ -927,25 +1085,78 @@ safety_net() {
   arch_chroot "tar --zstd -cf /var/lib/aui-x/etc-baseline.tar.zst -C / etc 2>/dev/null" || \
     print_warning "Snapshot de /etc falló (no fatal)."
 
-  # RECOVERY.md con procedimientos
-  cat > "${MOUNTPOINT}"/root/RECOVERY.md <<'RECOVERY_EOF'
+  # RECOVERY.md con procedimientos — bloques condicionales según layout real
+  local luks_dev_hint="/dev/${LUKS_DISK:-<device>}"
+
+  cat > "${MOUNTPOINT}"/root/RECOVERY.md <<RECOVERY_HEADER_EOF
 # Recovery — aui-x base install
+
+Layout detectado en este install:  LUKS=${LUKS}  LVM=${LVM}  LUKS_DEVICE=${luks_dev_hint}
 
 ## Si el sistema no bootea con kernel-zen
 
-En el menú del bootloader selecciona la entrada `linux-lts`. Es el kernel de fallback
+En el menú del bootloader selecciona la entrada \`linux-lts\`. Es el kernel de fallback
 instalado SIEMPRE como red de seguridad.
+
+## Procedimiento de chroot desde live USB
+RECOVERY_HEADER_EOF
+
+  if [[ $LUKS -eq 1 && $LVM -eq 1 ]]; then
+    cat >> "${MOUNTPOINT}"/root/RECOVERY.md <<RECOVERY_LVMLUKS_EOF
+
+Layout **LVM sobre LUKS** (default del proyecto):
+
+1. Boot desde live USB de Arch.
+2. Desbloquea el contenedor LUKS (passphrase del slot 0 — intacta tras fortress):
+       cryptsetup open ${luks_dev_hint} cryptroot
+3. Activa el volume group y monta el LV root:
+       vgchange -ay lvm
+       mount /dev/mapper/lvm-root /mnt
+       # Si existe LV home separado:
+       mount /dev/mapper/lvm-home /mnt/home 2>/dev/null || true
+       # ESP (ajusta la partición):
+       mount /dev/<esp-partition> /mnt/boot
+4. Chroot:
+       arch-chroot /mnt
+RECOVERY_LVMLUKS_EOF
+  elif [[ $LUKS -eq 1 ]]; then
+    cat >> "${MOUNTPOINT}"/root/RECOVERY.md <<RECOVERY_LUKS_EOF
+
+Layout **LUKS sin LVM**:
+
+1. Boot desde live USB de Arch.
+2. Desbloquea el contenedor LUKS (passphrase del slot 0 — intacta tras fortress):
+       cryptsetup open ${luks_dev_hint} cryptroot
+3. Monta root y ESP:
+       mount /dev/mapper/cryptroot /mnt
+       mount /dev/<esp-partition> /mnt/boot
+4. Chroot:
+       arch-chroot /mnt
+RECOVERY_LUKS_EOF
+  else
+    cat >> "${MOUNTPOINT}"/root/RECOVERY.md <<'RECOVERY_PLAIN_EOF'
+
+Layout **sin cifrado**:
+
+1. Boot desde live USB de Arch.
+2. Identifica root con `lsblk -f` (busca el FS donde está /etc).
+3. Monta root y ESP:
+       mount /dev/<root-partition> /mnt
+       mount /dev/<esp-partition> /mnt/boot
+4. Chroot:
+       arch-chroot /mnt
+RECOVERY_PLAIN_EOF
+  fi
+
+  cat >> "${MOUNTPOINT}"/root/RECOVERY.md <<'RECOVERY_COMMON_EOF'
 
 ## Si aui-fortress está instalado y bloquea el boot
 
-1. Boot desde live USB de Arch.
-2. Desbloquea LUKS con la passphrase del slot 0 (siempre intacta):
-       cryptsetup open /dev/<device> cryptroot
-3. Monta el sistema:
-       mount /dev/mapper/cryptroot /mnt && arch-chroot /mnt
-4. Desactiva fortress:
-       aui-fortress rollback --all
-5. Reboot.
+Tras hacer chroot (pasos arriba), desactiva fortress:
+
+    aui-fortress rollback --all
+
+Sal del chroot y reinicia.
 
 ## Si pierdes el token FIDO2 o el USB de presence
 
@@ -969,8 +1180,9 @@ externos, no en /root.
 - bootctl list                                  entradas del bootloader systemd-boot
 - cryptsetup luksDump /dev/<device>             estado de slots LUKS
 - lsblk -f                                      filesystems y UUIDs
+- vgs ; lvs                                     VGs y LVs activos
 - ls /var/lib/aui-x/etc-baseline.tar.zst        snapshot de /etc al terminar el install
-RECOVERY_EOF
+RECOVERY_COMMON_EOF
   chmod 600 "${MOUNTPOINT}"/root/RECOVERY.md
 
   # Verificación de los items

@@ -188,10 +188,8 @@ Operation=Upgrade
 Operation=Remove
 Type=Package
 Target=nvidia-open-dkms
-Target=linux
 Target=linux-zen
 Target=linux-lts
-Target=linux-hardened
 
 [Action]
 Description=Updating NVIDIA module in initcpio
@@ -507,21 +505,42 @@ install_bluetooth() {
 #}}}
 
 #ZRAM {{{
+# Idempotente respecto a Phase 1: aui/install ya escribe /etc/systemd/zram-generator.conf
+# con la versión completa (swap-priority=100, fs-type=swap). Aquí NO la pisamos para no
+# perder esos campos; sólo aseguramos paquete + servicio activo. Si la config no existe
+# (caso: setup corrido sobre un sistema ajeno a aui-x), la creamos con la versión completa.
 configure_zram() {
   print_title "ZRAM (swap comprimido en RAM)"
-  print_info "ZRAM mejora rendimiento bajo presión de memoria; recomendado en lugar de swapfile en disco."
-  read_confirm "Configurar ZRAM?" "y"
+
+  local zram_conf="/etc/systemd/zram-generator.conf"
+
+  if [[ -f "$zram_conf" ]]; then
+    print_info "Config existente detectada en $zram_conf (probablemente escrita por aui/install Phase 1)."
+    print_info "Contenido actual:"
+    sed 's/^/    /' "$zram_conf"
+    print_info "No se sobrescribe. Si quieres ajustar tamaño/compresión, edita el archivo manualmente."
+    pacman -S --needed --noconfirm zram-generator
+    systemctl daemon-reload
+    systemctl restart systemd-zram-setup@zram0.service 2>/dev/null || true
+    print_success "ZRAM verificado (config preservada de Phase 1)."
+    return
+  fi
+
+  print_info "Sin config previa. ZRAM mejora rendimiento bajo presión de memoria."
+  read_confirm "Configurar ZRAM ahora?" "y"
   [[ $OPTION == n ]] && return
 
   pacman -S --needed --noconfirm zram-generator
-  cat > /etc/systemd/zram-generator.conf <<'EOF'
+  cat > "$zram_conf" <<'EOF'
 [zram0]
 zram-size = min(ram / 2, 8192)
 compression-algorithm = zstd
+swap-priority = 100
+fs-type = swap
 EOF
   systemctl daemon-reload
-  systemctl start /dev/zram0 2>/dev/null || true
-  print_success "ZRAM configurado (half-RAM o 8GB max, zstd compression)."
+  systemctl start systemd-zram-setup@zram0.service 2>/dev/null || true
+  print_success "ZRAM configurado (half-RAM o 8GB max, zstd, priority 100)."
 }
 #}}}
 
