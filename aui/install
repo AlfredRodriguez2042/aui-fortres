@@ -202,11 +202,29 @@ setup_luks() {
   # lsblk -lnpo NAME,TYPE: una línea por dispositivo con path absoluto y type;
   # filtramos TYPE=="part" (excluye disk, lvm, crypt, etc.) → sólo particiones físicas.
   mapfile -t block_list < <(lsblk -lnpo NAME,TYPE | awk '$2=="part"{print $1}')
+
+  # GUARD: si no hay particiones físicas, no hay nada que cifrar. Causa típica:
+  # el usuario abrió cfdisk pero salió sin "Write" (no se persistió la tabla GPT),
+  # o el disco aún no tiene tabla de particiones. Sin este guard, el menú sólo
+  # muestra "Cancel" y un click descuidado disparaba luksFormat sobre "Cancel".
+  if [[ ${#block_list[@]} -eq 0 ]]; then
+    print_danger "No se detectaron particiones físicas en el sistema."
+    print_warning "Probablemente cfdisk se cerró sin escribir la tabla, o el disco no tiene GPT."
+    print_warning "Vuelve al paso de particionado, crea las particiones (ESP + root) y haz 'Write'."
+    pause_function
+    return 1
+  fi
+
   block_list+=("Cancel")
   PS3="$prompt1"
   echo -e "Select partition:"
   select OPT in "${block_list[@]}"; do
-    if contains_element "$OPT" "${block_list[@]}"; then
+    # IMPORTANT: chequear Cancel ANTES de contains_element. Si no, "Cancel" pasa
+    # como elemento válido del array y dispara luksFormat con OPT="Cancel" → boom.
+    if [[ "$OPT" == "Cancel" ]]; then
+      print_warning "LUKS cancelado; vuelve a elegir particionado o confirma un modo sin cifrado explícito."
+      return 1
+    elif contains_element "$OPT" "${block_list[@]}"; then
       print_danger "Esto destruirá irreversiblemente los datos y firmas existentes en ${OPT}."
       printf "%s" "Escribe CIFRAR para confirmar LUKS2 en ${OPT}: "
       read -r luks_confirm
@@ -235,9 +253,6 @@ setup_luks() {
       LUKS=1
       LUKS_DISK=$(echo "${OPT}" | sed 's/\/dev\///')
       break
-    elif [[ $OPT == "Cancel" ]]; then
-      print_warning "LUKS cancelado; vuelve a elegir particionado o confirma un modo sin cifrado explícito."
-      return 1
     else
       invalid_option
     fi
@@ -254,6 +269,10 @@ setup_lvm() {
     vgcreate lvm /dev/mapper/cryptroot || error_msg "vgcreate lvm falló"
   else
     mapfile -t block_list < <(lsblk -lnpo NAME,TYPE | awk '$2=="part"{print $1}')
+    # GUARD: misma protección que setup_luks contra tabla GPT no escrita
+    if [[ ${#block_list[@]} -eq 0 ]]; then
+      error_msg "No se detectaron particiones físicas. Vuelve al paso de particionado (cfdisk → 'Write')."
+    fi
     PS3="$prompt1"
     echo -e "Select partition:"
     select OPT in "${block_list[@]}"; do
