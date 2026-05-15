@@ -350,8 +350,21 @@ format_partitions() {
   fi
 
   select_filesystem() {
-    filesystems_list=("btrfs" "ext2" "ext3" "ext4" "f2fs" "jfs" "nilfs2" "ntfs" "reiserfs" "vfat" "xfs")
+    # Sólo 2 opciones tier-1 para desktop en 2026 (decisión senior).
+    # btrfs y ext4 cubren el 100% de los casos sensatos de instalación.
+    #
+    # Excluidos a propósito:
+    #   xfs       → no shrink, sin snapshots nativos; mejor en server/DB, no desktop
+    #   zfs       → no en mainline kernel (CDDL); requiere DKMS, cada update de kernel
+    #               puede dejar el sistema sin bootear. Para gurús, post-install manual.
+    #   bcachefs  → removido de mainline en 6.13 por drama del mantenedor; out-of-tree
+    #               en 2026, no apto para instalador automático.
+    #   vfat      → sólo auto-forzado para ESP (no user-selectable).
+    #   reiserfs/ext2/ext3/f2fs/jfs/nilfs2/ntfs → irrelevantes o muertos en 2026.
+    filesystems_list=("btrfs" "ext4")
     PS3="$prompt1"
+    print_info "btrfs (recomendado): snapshots, compresión zstd, subvols @/@home/@var_log/@snapshots → rollback con snapper."
+    print_info "ext4: estándar conservador, máxima compatibilidad, recovery con e2fsck. Sin snapshots ni compresión."
     echo -e "Select filesystem:\n"
     select filesystem in "${filesystems_list[@]}"; do
       if contains_element "${filesystem}" "${filesystems_list[@]}"; then
@@ -470,8 +483,12 @@ format_partitions() {
     read_input_text "Confirm format $1 partition"
     if [[ $OPTION == y ]]; then
       [[ -z $3 ]] && select_filesystem || filesystem=$3
+      # Flags por FS:
+      #   -f          → btrfs requiere -f para sobreescribir signature existente
+      #   -F32        → vfat (sólo ESP, auto-pasado por format_partition call con vfat)
+      #   -E discard  → ext4 con TRIM, marca bloques liberados como discardable al mkfs
       mkfs."${filesystem}" "$1" \
-        $([[ ${filesystem} == xfs || ${filesystem} == btrfs || ${filesystem} == reiserfs ]] && echo "-f") \
+        $([[ ${filesystem} == btrfs ]] && echo "-f") \
         $([[ ${filesystem} == vfat ]] && echo "-F32") \
         $([[ $TRIM -eq 1 && ${filesystem} == ext4 ]] && echo "-E discard")
       fsck "$1"
@@ -763,7 +780,7 @@ install_base_system() {
     cryptsetup lvm2 \
     networkmanager iwd \
     pipewire pipewire-pulse pipewire-alsa pipewire-jack wireplumber \
-    btrfs-progs dosfstools e2fsprogs xfsprogs f2fs-tools \
+    btrfs-progs dosfstools e2fsprogs \
     vim nano man-db man-pages \
     git sudo \
     reflector pacman-contrib \
@@ -992,6 +1009,12 @@ _kernel_cmdline() {
   else
     cmdline="root=${root_spec} rw"
   fi
+
+  # rd.lvm.lv=lvm/root: CRÍTICO con sd-lvm2 + sd-encrypt.
+  # Sin esto, systemd a veces no espera a que pvscan active el VG después de abrir
+  # LUKS → timeout → emergency mode con "/dev/mapper/lvm-root not found".
+  # Forzar el wait explícito por la LV root garantiza el orden de activación.
+  [[ $LVM -eq 1 ]] && cmdline="${cmdline} rd.lvm.lv=lvm/root"
 
   cmdline="${cmdline} amd_pstate=active split_lock_detect=off nowatchdog"
   cmdline="${cmdline} nvme_core.default_ps_max_latency_us=5500"
@@ -1377,26 +1400,27 @@ RECOVERY_COMMON_EOF
   if [[ ! -f "$sb_binary" ]] || [[ ! -f "$sb_fallback" ]] || [[ "$entries_count" -eq 0 ]] || [[ "$kernel_present" != "YES" ]]; then
     print_danger ""
     print_danger "PELIGRO: el bootloader/ESP no quedó completo. Si reinicias ahora, NO booteará."
-    print_danger "Vuelve al paso 12 (Install Bootloader) antes de continuar."
+    print_danger "Vuelve al paso 10 (Install Bootloader) antes de continuar."
     print_danger ""
   fi
 }
 #}}}
 #FINISH {{{
 # Validación dura pre-reboot: si falta cualquier paso crítico el sistema no boota.
-# Bug histórico: el usuario pulsaba 'd) Done' sin haber hecho 12) Bootloader o
-# 13) Root Password y reiniciaba a una live ISO sin sistema instalable.
+# Bug histórico: el usuario pulsaba 'd) Done' sin haber hecho 10) Bootloader o
+# 11) Root Password y reiniciaba a una live ISO sin sistema instalable.
 validate_critical_steps() {
   local missing=()
-  [[ ${checklist[4]:-0}  -eq 1 ]] || missing+=("4)  Partition Scheme")
-  [[ ${checklist[5]:-0}  -eq 1 ]] || missing+=("5)  Install Base System")
-  [[ ${checklist[6]:-0}  -eq 1 ]] || missing+=("6)  Configure Fstab")
-  [[ ${checklist[7]:-0}  -eq 1 ]] || missing+=("7)  Configure Hostname")
-  [[ ${checklist[8]:-0}  -eq 1 ]] || missing+=("8)  Configure Timezone")
-  [[ ${checklist[10]:-0} -eq 1 ]] || missing+=("10) Configure Locale")
-  [[ ${checklist[11]:-0} -eq 1 ]] || missing+=("11) Configure Mkinitcpio")
-  [[ ${checklist[12]:-0} -eq 1 ]] || missing+=("12) Install Bootloader")
-  [[ ${checklist[13]:-0} -eq 1 ]] || missing+=("13) Root Password")
+  [[ ${checklist[1]:-0}  -eq 1 ]] || missing+=("1)  Initial Setup")
+  [[ ${checklist[2]:-0}  -eq 1 ]] || missing+=("2)  Partition Scheme")
+  [[ ${checklist[3]:-0}  -eq 1 ]] || missing+=("3)  Install Base System")
+  [[ ${checklist[4]:-0}  -eq 1 ]] || missing+=("4)  Configure Fstab")
+  [[ ${checklist[5]:-0}  -eq 1 ]] || missing+=("5)  Configure Hostname")
+  [[ ${checklist[6]:-0}  -eq 1 ]] || missing+=("6)  Configure Timezone")
+  [[ ${checklist[8]:-0}  -eq 1 ]] || missing+=("8)  Configure Locale")
+  [[ ${checklist[9]:-0}  -eq 1 ]] || missing+=("9)  Configure Mkinitcpio")
+  [[ ${checklist[10]:-0} -eq 1 ]] || missing+=("10) Install Bootloader")
+  [[ ${checklist[11]:-0} -eq 1 ]] || missing+=("11) Root Password")
 
   if [[ ${#missing[@]} -gt 0 ]]; then
     print_danger "NO PUEDES REINICIAR: faltan pasos críticos sin los cuales el sistema no booteará."
@@ -1433,30 +1457,38 @@ finish() {
 }
 #}}}
 
+# Initial Setup: unifica keymap + editor (nano auto) + mirrorlist (país auto) en un
+# solo paso. Razón: editor ya es nano por default; mirrorlist auto-detecta país;
+# keymap es la única interacción real. Sacarlos del menú reduce 3 items a 1.
+initial_setup() {
+  print_title "INITIAL SETUP — keyboard, editor, mirrors"
+  print_info "Paso 1/3: layout de teclado para consola."
+  select_keymap
+  print_info "Paso 2/3: editor por default (auto)."
+  select_editor
+  print_info "Paso 3/3: mirrorlist con país auto-detectado."
+  configure_mirrorlist
+}
+
 pause_function
 check_boot_system
 check_connection
 check_trim
 pacman -Sy
-# Auto-setup: nano como editor por default (sin menú; AUI-X opina por ti).
-select_editor
-checklist[2]=1
 while true; do
   print_title "ARCHLINUX ULTIMATE INSTALL - https://github.com/helmuthdu/aui"
-  echo " 1) $(mainmenu_item "${checklist[1]}" "Select Keymap" "${KEYMAP}")"
-  echo " 2) $(mainmenu_item "${checklist[2]}" "Editor (auto: nano)" "${EDITOR}")"
-  echo " 3) $(mainmenu_item "${checklist[3]}" "Configure Mirrorlist" "${country_name} (${country_code})")"
-  echo " 4) $(mainmenu_item "${checklist[4]}" "Partition Scheme" "${partition_layout}: ${partition}(${filesystem}) [swap=zram]")"
-  echo " 5) $(mainmenu_item "${checklist[5]}" "Install Base System")"
-  echo " 6) $(mainmenu_item "${checklist[6]}" "Configure Fstab" "${fstab}")"
-  echo " 7) $(mainmenu_item "${checklist[7]}" "Configure Hostname" "${host_name}")"
-  echo " 8) $(mainmenu_item "${checklist[8]}" "Configure Timezone" "${ZONE}/${SUBZONE}")"
-  echo " 9) $(mainmenu_item "${checklist[9]}" "Configure Hardware Clock" "${hwclock}")"
-  echo "10) $(mainmenu_item "${checklist[10]}" "Configure Locale" "${LOCALE}")"
-  echo "11) $(mainmenu_item "${checklist[11]}" "Configure Mkinitcpio")"
-  echo "12) $(mainmenu_item "${checklist[12]}" "Install Bootloader" "${bootloader}")"
-  echo "13) $(mainmenu_item "${checklist[13]}" "Root Password")"
-  echo "14) $(mainmenu_item "${checklist[14]}" "AUR helper" "${AUR_HELPER:-}")"
+  echo " 1) $(mainmenu_item "${checklist[1]}" "Initial Setup (keymap + editor + mirrors)" "${KEYMAP:+$KEYMAP, }${EDITOR:+$EDITOR, }${country_code:+$country_code}")"
+  echo " 2) $(mainmenu_item "${checklist[2]}" "Partition Scheme" "${partition_layout}: ${partition}(${filesystem}) [swap=zram]")"
+  echo " 3) $(mainmenu_item "${checklist[3]}" "Install Base System")"
+  echo " 4) $(mainmenu_item "${checklist[4]}" "Configure Fstab" "${fstab}")"
+  echo " 5) $(mainmenu_item "${checklist[5]}" "Configure Hostname" "${host_name}")"
+  echo " 6) $(mainmenu_item "${checklist[6]}" "Configure Timezone" "${ZONE}/${SUBZONE}")"
+  echo " 7) $(mainmenu_item "${checklist[7]}" "Configure Hardware Clock" "${hwclock}")"
+  echo " 8) $(mainmenu_item "${checklist[8]}" "Configure Locale" "${LOCALE}")"
+  echo " 9) $(mainmenu_item "${checklist[9]}" "Configure Mkinitcpio")"
+  echo "10) $(mainmenu_item "${checklist[10]}" "Install Bootloader" "${bootloader}")"
+  echo "11) $(mainmenu_item "${checklist[11]}" "Root Password")"
+  echo "12) $(mainmenu_item "${checklist[12]}" "AUR helper" "${AUR_HELPER:-}")"
   echo ""
   echo " d) Done"
   echo ""
@@ -1464,64 +1496,56 @@ while true; do
   for OPT in "${OPTIONS[@]}"; do
     case "$OPT" in
     1)
-      select_keymap
+      initial_setup
       checklist[1]=1
       ;;
     2)
-      select_editor
-      checklist[2]=1
-      ;;
-    3)
-      configure_mirrorlist
-      checklist[3]=1
-      ;;
-    4)
       umount_partitions
       create_partition_scheme
       format_partitions
+      checklist[2]=1
+      ;;
+    3)
+      install_base_system
+      configure_keymap
+      checklist[3]=1
+      ;;
+    4)
+      configure_fstab
       checklist[4]=1
       ;;
     5)
-      install_base_system
-      configure_keymap
+      configure_hostname
       checklist[5]=1
       ;;
     6)
-      configure_fstab
+      configure_timezone
       checklist[6]=1
       ;;
     7)
-      configure_hostname
+      configure_hardwareclock
       checklist[7]=1
       ;;
     8)
-      configure_timezone
+      configure_locale
       checklist[8]=1
       ;;
     9)
-      configure_hardwareclock
+      configure_mkinitcpio
       checklist[9]=1
       ;;
     10)
-      configure_locale
+      install_bootloader
+      configure_bootloader
       checklist[10]=1
       ;;
     11)
-      configure_mkinitcpio
+      root_password
       checklist[11]=1
       ;;
     12)
-      install_bootloader
-      configure_bootloader
-      checklist[12]=1
-      ;;
-    13)
-      root_password
-      checklist[13]=1
-      ;;
-    14)
       install_aur_helper
-      checklist[14]=1
+      checklist[12]=1
       ;;
     "d")
       finish
