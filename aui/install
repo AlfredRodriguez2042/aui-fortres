@@ -870,9 +870,23 @@ configure_keymap() {
   echo "KEYMAP=$KEYMAP" >"${MOUNTPOINT}"/etc/vconsole.conf
 }
 #}}}
+#REQUIRE_BASE_INSTALLED {{{
+# Helper: chequea que pacstrap (paso 3) ya corrió antes de tocar /mnt/etc.
+# Evita fallos opacos cuando el usuario ejecuta pasos fuera de orden.
+require_base_installed() {
+  local step_name="${1:-Este paso}"
+  if [[ ! -d "${MOUNTPOINT}/etc" ]] || [[ ! -f "${MOUNTPOINT}/etc/pacman.conf" ]]; then
+    print_error "${step_name} requiere que el sistema base esté instalado en ${MOUNTPOINT}."
+    print_warning "Ejecuta primero el paso 3 (Install Base System)."
+    return 1
+  fi
+  return 0
+}
+#}}}
 #CONFIGURE FSTAB {{{
 configure_fstab() {
   print_title "FSTAB - https://wiki.archlinux.org/index.php/Fstab"
+  require_base_installed "Configure Fstab" || return 1
   # Auto-pick: PARTUUID en UEFI (estable, sobrevive reformats y cambios de orden de disco)
   # o UUID en BIOS (estable a nivel filesystem). Ambos son la opción correcta en 2026;
   # DEV (/dev/sdaN) es frágil porque cambia con USBs/orden de disco.
@@ -900,6 +914,7 @@ configure_fstab() {
 #CONFIGURE HOSTNAME {{{
 configure_hostname() {
   print_title "HOSTNAME - https://wiki.archlinux.org/index.php/HOSTNAME"
+  require_base_installed "Configure Hostname" || return 1
   print_info "Hostname RFC1123: minúsculas/dígitos/guion, no empieza ni termina en guion, máx 63 chars."
   # Re-prompt hasta que el input pase la validación. Evita escribir basura en /etc/hostname
   # y bloquea cualquier carácter que rompería el sed posterior (/, ', ;, etc.).
@@ -926,6 +941,7 @@ configure_hostname() {
 #CONFIGURE TIMEZONE {{{
 configure_timezone() {
   print_title "TIMEZONE - https://wiki.archlinux.org/index.php/Timezone"
+  require_base_installed "Configure Timezone" || return 1
   print_info "In an operating system the time (clock) is determined by four parts: Time value, Time standard, Time Zone, and DST (Daylight Saving Time if applicable)."
   OPTION=n
   while [[ $OPTION != y ]]; do
@@ -942,6 +958,7 @@ configure_timezone() {
 #CONFIGURE HARDWARECLOCK {{{
 configure_hardwareclock() {
   print_title "HARDWARE CLOCK TIME - https://wiki.archlinux.org/index.php/Internationalization"
+  require_base_installed "Configure Hardware Clock" || return 1
   print_info "This is set in /etc/adjtime. Set the hardware clock mode uniformly between your operating systems on the same machine. Otherwise, they will overwrite the time and cause clock shifts (which can cause time drift correction to be miscalibrated)."
   hwclock_list=('UTC' 'Localtime')
   PS3="$prompt1"
@@ -963,6 +980,7 @@ configure_hardwareclock() {
 #CONFIGURE LOCALE {{{
 configure_locale() {
   print_title "LOCALE - https://wiki.archlinux.org/index.php/Locale"
+  require_base_installed "Configure Locale" || return 1
   print_info "Locales are used in Linux to define which language the user uses. As the locales define the character sets being used as well, setting up the correct locale is especially important if the language contains non-ASCII characters."
   OPTION=n
   while [[ $OPTION != y ]]; do
@@ -977,6 +995,21 @@ configure_locale() {
 #CONFIGURE MKINITCPIO {{{
 configure_mkinitcpio() {
   print_title "MKINITCPIO - https://wiki.archlinux.org/index.php/Mkinitcpio"
+
+  # PRE-CHECK: este paso requiere que pacstrap haya corrido (paso 3). Sin él,
+  # /mnt/etc/mkinitcpio.conf no existe → sed falla silenciosamente y arch_chroot
+  # con /mnt vacío produce errores opacos. Diagnóstico claro en lugar de fallo
+  # silencioso confuso.
+  if [[ ! -f "${MOUNTPOINT}/etc/mkinitcpio.conf" ]]; then
+    print_error "${MOUNTPOINT}/etc/mkinitcpio.conf no existe."
+    print_warning "Este paso depende del paso 3 (Install Base System). Ejecútalo primero."
+    return 1
+  fi
+  if ! arch_chroot "command -v mkinitcpio >/dev/null 2>&1"; then
+    print_error "El binario mkinitcpio no está en ${MOUNTPOINT}. Pacstrap incompleto?"
+    return 1
+  fi
+
   print_info "Configurando initramfs con hooks systemd (sd-encrypt + sd-lvm2). Más robusto y compatible con FIDO2/TPM en fortress."
 
   # Hooks systemd-based (reemplaza udev/encrypt/lvm2 legacy)
@@ -996,15 +1029,33 @@ configure_mkinitcpio() {
     echo 'COMPRESSION_OPTIONS=(-19 -T0)' >> "${MOUNTPOINT}"/etc/mkinitcpio.conf
   fi
 
-  print_info "mkinitcpio.conf actualizado (HOOKS=$hooks, COMPRESSION=zstd -19 -T0). Saltando editor interactivo; revisa con: vim ${MOUNTPOINT}/etc/mkinitcpio.conf"
+  print_info "mkinitcpio.conf actualizado (HOOKS=$hooks, COMPRESSION=zstd -19 -T0)."
+  print_info "Regenerando initramfs para todos los presets (zen + linux-lts)..."
 
-  # -P regenera para TODOS los presets instalados (zen + linux-lts recovery)
-  arch_chroot "mkinitcpio -P"
+  # -P regenera para TODOS los presets instalados. Capturamos exit explícito
+  # para que run_step distinga "éxito real" de "falló silenciosamente con warnings".
+  if arch_chroot "mkinitcpio -P"; then
+    # Verificación adicional: los .img tienen que existir tras la regeneración
+    local missing=0
+    for k in "$KERNEL_PRIMARY" "linux-lts"; do
+      [[ -f "${MOUNTPOINT}/boot/initramfs-${k}.img" ]] || { print_warning "Falta /boot/initramfs-${k}.img"; missing=1; }
+    done
+    if [[ $missing -eq 1 ]]; then
+      print_error "mkinitcpio -P terminó pero algún initramfs no se generó."
+      return 1
+    fi
+    print_success "initramfs regenerado: $(ls "${MOUNTPOINT}/boot/initramfs-"*.img 2>/dev/null | wc -l) imágenes."
+    return 0
+  else
+    print_error "mkinitcpio -P retornó error. Revisa output arriba (módulos faltantes, hooks rotos, etc.)."
+    return 1
+  fi
 }
 #}}}
 #INSTALL BOOTLOADER {{{
 install_bootloader() {
   print_title "BOOTLOADER - https://wiki.archlinux.org/index.php/Bootloader"
+  require_base_installed "Install Bootloader" || return 1
   print_info "AUI-X usa UEFI + systemd-boot. No hay ruta BIOS/legacy."
   if [[ $UEFI -ne 1 ]]; then
     print_error "UEFI no detectado. AUI-X no soporta BIOS/legacy."
@@ -1235,14 +1286,16 @@ EOF
 #ROOT PASSWORD {{{
 root_password() {
   print_title "ROOT PASSWORD"
+  require_base_installed "Root Password" || return 1
   print_warning "Enter your new root password"
-  arch_chroot "passwd"
+  arch_chroot "passwd" || { print_error "passwd falló."; return 1; }
   pause_function
 }
 #}}}
 #AUR HELPER {{{
 install_aur_helper() {
   print_title "AUR HELPER"
+  require_base_installed "AUR Helper" || return 1
   print_info "Instalando paru en Phase 1 para que setup/post-install puedan usar AUR si hace falta."
 
   local opts=("paru (recomendado)" "Skip")
@@ -1532,6 +1585,39 @@ initial_setup() {
   configure_mirrorlist
 }
 
+# run_step: feedback explícito y uniforme para cada paso del menú.
+# Diseño product-engineer: el usuario NUNCA debe quedar adivinando si un paso
+# salió bien. Cada invocación termina con UNA línea clara (✓ verde o ✗ rojo)
+# y un pause_function para que la lea ANTES de que el menú se redibuje.
+#
+# Args: <num-del-checklist> "<nombre-display>" <función-a-ejecutar> [args...]
+run_step() {
+  local num="$1" name="$2"
+  shift 2
+  if "$@"; then
+    checklist[$num]=1
+    print_success "Paso ${num} (${name}) completado correctamente."
+  else
+    local rc=$?
+    print_error "Paso ${num} (${name}) NO completado (exit code ${rc})."
+    print_warning "Revisa los mensajes arriba. Puedes reintentar este paso desde el menú."
+  fi
+  pause_function
+}
+
+# Wrappers para pasos compuestos. Encadenan con && para que un fallo
+# temprano corte el resto y propague el exit code real al run_step.
+_do_partitioning() {
+  umount_partitions
+  create_partition_scheme && format_partitions
+}
+_do_base_install() {
+  install_base_system && configure_keymap
+}
+_do_bootloader() {
+  install_bootloader && configure_bootloader
+}
+
 pause_function
 check_boot_system
 check_connection
@@ -1556,64 +1642,25 @@ while true; do
   echo ""
   read_input_options
   for OPT in "${OPTIONS[@]}"; do
-    # Patrón uniforme: cada paso retorna 0 (éxito → checklist=1) o 1 (cancel/fallo
-    # → checklist queda en 0, mensaje al usuario, vuelve al menú). NUNCA exit.
+    # Patrón uniforme via run_step:
+    #   - éxito  → checklist[N]=1 + "✓ Paso N (name) completado" verde + pause
+    #   - fallo  → checklist[N]=0 + "✗ Paso N (name) NO completado (exit X)" rojo + pause
+    # El usuario SIEMPRE ve el resultado antes de que el menú se redibuje.
     case "$OPT" in
-    1)
-      if initial_setup; then checklist[1]=1
-      else print_warning "Paso 1 (Initial Setup) cancelado o falló. Reintentar cuando quieras."; fi
-      ;;
-    2)
-      umount_partitions
-      if create_partition_scheme && format_partitions; then checklist[2]=1
-      else print_warning "Paso 2 (Partition Scheme) cancelado o falló. Particiones pueden estar a medias — revisa con 'lsblk' antes de reintentar."; fi
-      ;;
-    3)
-      if install_base_system && configure_keymap; then checklist[3]=1
-      else print_warning "Paso 3 (Install Base) falló. Revisa red/mirrors y reintenta."; fi
-      ;;
-    4)
-      if configure_fstab; then checklist[4]=1
-      else print_warning "Paso 4 (Fstab) falló. Verifica que ${MOUNTPOINT} esté montado correctamente."; fi
-      ;;
-    5)
-      if configure_hostname; then checklist[5]=1
-      else print_warning "Paso 5 (Hostname) cancelado."; fi
-      ;;
-    6)
-      if configure_timezone; then checklist[6]=1
-      else print_warning "Paso 6 (Timezone) cancelado."; fi
-      ;;
-    7)
-      if configure_hardwareclock; then checklist[7]=1
-      else print_warning "Paso 7 (Hardware Clock) cancelado."; fi
-      ;;
-    8)
-      if configure_locale; then checklist[8]=1
-      else print_warning "Paso 8 (Locale) cancelado."; fi
-      ;;
-    9)
-      if configure_mkinitcpio; then checklist[9]=1
-      else print_warning "Paso 9 (Mkinitcpio) falló. Revisa /etc/mkinitcpio.conf y reintenta."; fi
-      ;;
-    10)
-      if install_bootloader && configure_bootloader; then checklist[10]=1
-      else print_warning "Paso 10 (Bootloader) falló. Sin bootloader el sistema NO arrancará."; fi
-      ;;
-    11)
-      if root_password; then checklist[11]=1
-      else print_warning "Paso 11 (Root Password) cancelado. Sin root password no podrás loguear post-install."; fi
-      ;;
-    12)
-      if install_aur_helper; then checklist[12]=1
-      else print_warning "Paso 12 (AUR helper) opcional saltado/falló."; fi
-      ;;
-    "d")
-      finish
-      ;;
-    *)
-      invalid_option
-      ;;
+    1)  run_step 1  "Initial Setup"          initial_setup ;;
+    2)  run_step 2  "Partition Scheme"       _do_partitioning ;;
+    3)  run_step 3  "Install Base System"    _do_base_install ;;
+    4)  run_step 4  "Configure Fstab"        configure_fstab ;;
+    5)  run_step 5  "Configure Hostname"     configure_hostname ;;
+    6)  run_step 6  "Configure Timezone"     configure_timezone ;;
+    7)  run_step 7  "Configure Hardware Clock" configure_hardwareclock ;;
+    8)  run_step 8  "Configure Locale"       configure_locale ;;
+    9)  run_step 9  "Configure Mkinitcpio"   configure_mkinitcpio ;;
+    10) run_step 10 "Install Bootloader"     _do_bootloader ;;
+    11) run_step 11 "Root Password"          root_password ;;
+    12) run_step 12 "AUR Helper"             install_aur_helper ;;
+    "d") finish ;;
+    *)   invalid_option ;;
     esac
   done
 done
