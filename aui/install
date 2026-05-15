@@ -276,14 +276,14 @@ setup_lvm() {
   select LVM_MODE in "${lvm_modes[@]}"; do
     case "$LVM_MODE" in
       "Guided root+home (recommended)")
-        local root_size swap_size ans
+        local root_size swap_size
         printf "%s" "Root LV size [default: 30G, recommended real desktop: 60G+]: "
         read -r root_size
         root_size="${root_size:-30G}"
         lvcreate -L "$root_size" lvm -n root || error_msg "No se pudo crear LV root de $root_size. Usa un disco más grande o menor tamaño."
 
-        read -rp "Create swap LV? [y/N]: " ans
-        if [[ "$ans" =~ ^[Yy]$ ]]; then
+        read_confirm "Create swap LV?" "n"
+        if [[ $OPTION == y ]]; then
           printf "%s" "Swap LV size [default: 4G]: "
           read -r swap_size
           swap_size="${swap_size:-4G}"

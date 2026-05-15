@@ -510,8 +510,8 @@ install_bluetooth() {
 configure_zram() {
   print_title "ZRAM (swap comprimido en RAM)"
   print_info "ZRAM mejora rendimiento bajo presión de memoria; recomendado en lugar de swapfile en disco."
-  read -rp "Configurar ZRAM? [Y/n]: " ans
-  [[ "$ans" =~ ^[Nn]$ ]] && return
+  read_confirm "Configurar ZRAM?" "y"
+  [[ $OPTION == n ]] && return
 
   pacman -S --needed --noconfirm zram-generator
   cat > /etc/systemd/zram-generator.conf <<'EOF'
