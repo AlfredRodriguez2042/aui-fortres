@@ -107,14 +107,22 @@ umount_partitions() {
 #}}}
 #SELECT DEVICE {{{
 select_device() {
-  devices_list=($(lsblk -d | awk '{print "/dev/" $1}' | grep 'sd\|hd\|vd\|nvme\|mmcblk'))
+  mapfile -t devices_list < <(lsblk -d | awk '{print "/dev/" $1}' | grep -E 'sd|hd|vd|nvme|mmcblk')
+  if [[ ${#devices_list[@]} -eq 0 ]]; then
+    print_error "No se detectaron discos. Verifica que el disco esté conectado."
+    return 1
+  fi
+  devices_list+=("Volver")
   PS3="$prompt1"
   echo -e "Attached Devices:\n"
   lsblk -lnp -I 2,3,8,9,22,34,56,57,58,65,66,67,68,69,70,71,72,91,128,129,130,131,132,133,134,135,259 | awk '{print $1,$4,$6,$7}' | column -t
   echo -e "\n"
-  echo -e "Select device to partition:\n"
+  echo -e "Select device to partition (o 'Volver' para abortar):\n"
   select device in "${devices_list[@]}"; do
-    if contains_element "${device}" "${devices_list[@]}"; then
+    if [[ "$device" == "Volver" ]]; then
+      print_info "Selección de disco cancelada."
+      return 1
+    elif contains_element "${device}" "${devices_list[@]}"; then
       break
     else
       invalid_option
@@ -132,29 +140,29 @@ create_partition_scheme() {
   print_info "Default del proyecto: cifrado LUKS desde el particionado inicial."
   print_warning "Sin LUKS no podrás usar luego fido2-unlock/keyfile-usb de fortress para root."
   print_warning "Maintain Current does not create LUKS; úsalo sólo si ya preparaste el cifrado manualmente."
-  partition_layouts=("LVM+LUKS (default, recommended)" "Default (NO encryption)" "LVM (NO encryption)" "Maintain Current")
+  partition_layouts=("LVM+LUKS (default, recommended)" "Default (NO encryption)" "LVM (NO encryption)" "Maintain Current" "Volver al menú principal")
   PS3="$prompt1"
   echo -e "Select partition scheme:"
   select OPT in "${partition_layouts[@]}"; do
     partition_layout=$OPT
     case "$OPT" in
       "LVM+LUKS (default, recommended)")
-        create_partition
-        setup_luks || continue
-        setup_lvm
+        create_partition || { print_warning "Particionado cancelado."; return 1; }
+        setup_luks       || { print_warning "Setup LUKS cancelado/falló."; return 1; }
+        setup_lvm        || { print_warning "Setup LVM falló."; return 1; }
         ;;
       "Default (NO encryption)")
         print_danger "Seleccionaste instalación SIN cifrado. Fortress no convertirá root/home a LUKS después."
         read_input_text "Confirmar instalación SIN cifrado"
         [[ $OPTION != y ]] && continue
-        create_partition
+        create_partition || { print_warning "Particionado cancelado."; return 1; }
         ;;
       "LVM (NO encryption)")
         print_danger "Seleccionaste LVM SIN cifrado. Fortress no convertirá root/home a LUKS después."
         read_input_text "Confirmar instalación SIN cifrado"
         [[ $OPTION != y ]] && continue
-        create_partition
-        setup_lvm
+        create_partition || { print_warning "Particionado cancelado."; return 1; }
+        setup_lvm        || { print_warning "Setup LVM falló."; return 1; }
         ;;
       "Maintain Current")
         print_warning "Maintain Current asume que ya montaste/abriste cualquier LUKS existente manualmente."
@@ -162,8 +170,13 @@ create_partition_scheme() {
         vgscan &>/dev/null
         vgchange -ay &>/dev/null
         ;;
+      "Volver al menú principal")
+        print_info "Volviendo al menú principal sin tocar el disco."
+        return 1
+        ;;
       *)
         invalid_option
+        continue
         ;;
     esac
     [[ -n $OPT ]] && break
@@ -173,24 +186,29 @@ create_partition_scheme() {
 #SETUP PARTITION{{{
 create_partition() {
   umount_partitions
-  apps_list=("cfdisk" "cgdisk" "fdisk" "gdisk" "parted")
+  apps_list=("cfdisk (recomendado, TUI simple)" "cgdisk" "fdisk" "gdisk" "parted" "Volver")
   PS3="$prompt1"
-  echo -e "Select partition program:"
+  echo -e "Select partition program (o 'Volver' para cancelar):"
   select OPT in "${apps_list[@]}"; do
-    if contains_element "$OPT" "${apps_list[@]}"; then
-      select_device
-      case $OPT in
-      parted)
-        parted -a opt "${device}"
+    case "$OPT" in
+      "Volver")
+        print_info "Particionado cancelado."
+        return 1
         ;;
+      "cfdisk"*)  prog="cfdisk" ;;
+      cgdisk|fdisk|gdisk|parted) prog="$OPT" ;;
       *)
-        $OPT "${device}"
+        invalid_option
+        continue
         ;;
-      esac
-      break
+    esac
+    select_device || return 1
+    if [[ "$prog" == "parted" ]]; then
+      parted -a opt "${device}"
     else
-      invalid_option
+      "$prog" "${device}"
     fi
+    break
   done
 }
 #}}}
@@ -232,7 +250,7 @@ setup_luks() {
         print_warning "LUKS cancelado; no se continúa sin cifrado."
         return 1
       }
-      wipefs -a "$OPT" || error_msg "wipefs falló en ${OPT}; no se continúa sin cifrado."
+      wipefs -a "$OPT" || { print_error "wipefs falló en ${OPT}; LUKS abortado."; return 1; }
       # cryptsetup flags 2026:
       #   --use-urandom            evita bloqueo en live ISO sin RNG hardware (urandom es eq. cripto)
       #   --pbkdf argon2id         explícito (default desde cryptsetup 2.4 pero no asumir)
@@ -243,13 +261,13 @@ setup_luks() {
         --pbkdf argon2id --pbkdf-memory 524288 --pbkdf-parallel 4 --iter-time 5000 \
         --use-urandom --verify-passphrase \
         luksFormat "$OPT" \
-        || error_msg "luksFormat falló; no se continúa sin cifrado."
+        || { print_error "luksFormat falló. ${OPT} puede tener header parcial; verifica con 'cryptsetup luksDump ${OPT}'."; return 1; }
       local open_args=(open --type luks)
       [[ $TRIM -eq 1 ]] && open_args+=(--allow-discards)
       # Nombre canónico 'cryptroot' usado consistentemente en setup_lvm, fstab generado,
       # y rd.luks.name= del cmdline. NO usar 'crypt' (legacy, rompía LUKS-sin-LVM).
       cryptsetup "${open_args[@]}" "$OPT" cryptroot \
-        || error_msg "No se pudo abrir el contenedor LUKS; no se continúa sin cifrado."
+        || { print_error "No se pudo abrir el contenedor LUKS recién creado."; return 1; }
       LUKS=1
       LUKS_DISK=$(echo "${OPT}" | sed 's/\/dev\///')
       break
@@ -265,45 +283,48 @@ setup_lvm() {
   print_info "LVM is a logical volume manager for the Linux kernel; it manages disk drives and similar mass-storage devices."
   print_info "Layout default: single root LV ocupando el 100% del VG. /home queda como subdir de / (o subvol @home en btrfs)."
   if [[ $LUKS -eq 1 ]]; then
-    pvcreate /dev/mapper/cryptroot || error_msg "pvcreate falló sobre /dev/mapper/cryptroot"
-    vgcreate lvm /dev/mapper/cryptroot || error_msg "vgcreate lvm falló"
+    pvcreate /dev/mapper/cryptroot || { print_error "pvcreate falló sobre /dev/mapper/cryptroot"; return 1; }
+    vgcreate lvm /dev/mapper/cryptroot || { print_error "vgcreate lvm falló"; return 1; }
   else
     mapfile -t block_list < <(lsblk -lnpo NAME,TYPE | awk '$2=="part"{print $1}')
-    # GUARD: misma protección que setup_luks contra tabla GPT no escrita
     if [[ ${#block_list[@]} -eq 0 ]]; then
-      error_msg "No se detectaron particiones físicas. Vuelve al paso de particionado (cfdisk → 'Write')."
+      print_error "No se detectaron particiones físicas. Vuelve al paso de particionado (cfdisk → 'Write')."
+      return 1
     fi
+    block_list+=("Volver")
     PS3="$prompt1"
-    echo -e "Select partition:"
+    echo -e "Select partition para LVM PV (o 'Volver'):"
     select OPT in "${block_list[@]}"; do
-      if contains_element "$OPT" "${block_list[@]}"; then
-        pvcreate "$OPT" || error_msg "pvcreate falló sobre $OPT"
-        vgcreate lvm "$OPT" || error_msg "vgcreate lvm falló"
+      if [[ "$OPT" == "Volver" ]]; then
+        print_info "LVM cancelado."
+        return 1
+      elif contains_element "$OPT" "${block_list[@]}"; then
+        pvcreate "$OPT" || { print_error "pvcreate falló sobre $OPT"; return 1; }
+        vgcreate lvm "$OPT" || { print_error "vgcreate lvm falló"; return 1; }
         break
       else
         invalid_option
       fi
     done
   fi
-  local lvm_modes=("Guided root (recommended)" "Manual")
+  local lvm_modes=("Guided root (recommended)" "Manual" "Volver")
   PS3="$prompt1"
   print_info "Guiado: un solo LV 'root' = 100% del VG. En el siguiente paso elige /dev/mapper/lvm-root como /."
-  echo -e "Select LVM layout:\n"
+  echo -e "Select LVM layout (o 'Volver'):\n"
   select LVM_MODE in "${lvm_modes[@]}"; do
     case "$LVM_MODE" in
       "Guided root (recommended)")
         # Single-root layout: root LV ocupa el 100% del VG.
-        # Razón: la partición LUKS ya fue dimensionada por el usuario al particionar
-        # el disco; preguntar otra vez "cuánto para root" es redundante y confuso.
-        # /home queda como subdirectorio de /, no como LV separado — más simple,
-        # más flexible (mover archivos entre / y /home no necesita resize).
-        # Con btrfs subvols (@home), /home queda igualmente aislado para snapshots.
         print_info "Layout: root LV ocupa el 100% del VG (sin LV-home separado)."
         print_info "/home será un subdirectorio de / (o subvol @home si usas btrfs)."
         lvcreate -l 100%FREE lvm -n root \
-          || error_msg "lvcreate root falló sobre el VG 'lvm'."
+          || { print_error "lvcreate root falló sobre el VG 'lvm'."; return 1; }
         LVM=1
-        return
+        return 0
+        ;;
+      "Volver")
+        print_info "LVM mode cancelado. El VG 'lvm' quedó creado vacío; puedes hacerlo Manual la próxima vez."
+        return 1
         ;;
       "Manual")
         break
@@ -322,7 +343,8 @@ setup_lvm() {
     printf "%s" "Enter $iª LV name [required first LV: root; ex: root, home, data]: "
     read -r partition_name
     if [[ $i -eq 1 && "$partition_name" != "root" ]]; then
-      error_msg "El primer LV debe llamarse root para evitar instalaciones con / demasiado pequeño o mal montado."
+      print_error "El primer LV debe llamarse 'root'. Reinicia el setup LVM Manual."
+      return 1
     fi
     if [[ $i -eq $number_partitions ]]; then
       lvcreate -l 100%FREE lvm -n "${partition_name}"
@@ -353,7 +375,8 @@ format_partitions() {
   mapfile -t partitions_list < <(lsblk -lnpo NAME,TYPE | awk '$2=="part" || $2=="lvm" {print $1}')
 
   if [[ ${#partitions_list[@]} -eq 0 ]]; then
-    error_msg "No se detectaron particiones ni LVs. Vuelve al paso de particionado."
+    print_error "No se detectaron particiones ni LVs. Vuelve al paso de particionado."
+    return 1
   fi
 
   role_partitions=()
@@ -369,25 +392,18 @@ format_partitions() {
   fi
 
   select_filesystem() {
-    # Sólo 2 opciones tier-1 para desktop en 2026 (decisión senior).
-    # btrfs y ext4 cubren el 100% de los casos sensatos de instalación.
-    #
-    # Excluidos a propósito:
-    #   xfs       → no shrink, sin snapshots nativos; mejor en server/DB, no desktop
-    #   zfs       → no en mainline kernel (CDDL); requiere DKMS, cada update de kernel
-    #               puede dejar el sistema sin bootear. Para gurús, post-install manual.
-    #   bcachefs  → removido de mainline en 6.13 por drama del mantenedor; out-of-tree
-    #               en 2026, no apto para instalador automático.
-    #   vfat      → sólo auto-forzado para ESP (no user-selectable).
-    #   reiserfs/ext2/ext3/f2fs/jfs/nilfs2/ntfs → irrelevantes o muertos en 2026.
-    filesystems_list=("btrfs" "ext4")
+    # 2 opciones tier-1 + Volver. Devolver "" en filesystem señala cancel al caller.
+    filesystems_list=("btrfs" "ext4" "Volver")
     PS3="$prompt1"
     print_info "btrfs (recomendado): snapshots, compresión zstd, subvols @/@home/@var_log/@snapshots → rollback con snapper."
     print_info "ext4: estándar conservador, máxima compatibilidad, recovery con e2fsck. Sin snapshots ni compresión."
-    echo -e "Select filesystem:\n"
+    echo -e "Select filesystem (o 'Volver'):\n"
     select filesystem in "${filesystems_list[@]}"; do
-      if contains_element "${filesystem}" "${filesystems_list[@]}"; then
-        break
+      if [[ "$filesystem" == "Volver" ]]; then
+        filesystem=""
+        return 1
+      elif contains_element "${filesystem}" "${filesystems_list[@]}"; then
+        return 0
       else
         invalid_option
       fi
@@ -478,16 +494,16 @@ format_partitions() {
     print_info "Btrfs detectado para /: creando layout de subvolúmenes (@, @home, @var_log, @snapshots)."
 
     # Mount temporal en raíz del FS para crear subvols
-    mount -t btrfs "$dev" "$mnt" || error_msg "mount inicial btrfs falló sobre $dev"
-    btrfs subvolume create "$mnt/@"          || error_msg "btrfs subvolume create @ falló"
-    btrfs subvolume create "$mnt/@home"      || error_msg "btrfs subvolume create @home falló"
-    btrfs subvolume create "$mnt/@var_log"   || error_msg "btrfs subvolume create @var_log falló"
-    btrfs subvolume create "$mnt/@snapshots" || error_msg "btrfs subvolume create @snapshots falló"
+    mount -t btrfs "$dev" "$mnt" || { print_error "mount inicial btrfs falló sobre $dev"; return 1; }
+    btrfs subvolume create "$mnt/@"          || { print_error "btrfs subvol @ falló";          umount "$mnt"; return 1; }
+    btrfs subvolume create "$mnt/@home"      || { print_error "btrfs subvol @home falló";      umount "$mnt"; return 1; }
+    btrfs subvolume create "$mnt/@var_log"   || { print_error "btrfs subvol @var_log falló";   umount "$mnt"; return 1; }
+    btrfs subvolume create "$mnt/@snapshots" || { print_error "btrfs subvol @snapshots falló"; umount "$mnt"; return 1; }
     umount "$mnt"
 
     # Remount con subvol=@ + opciones tuneadas
     mount -t btrfs -o "subvol=@,${mount_opts}" "$dev" "$mnt" \
-      || error_msg "remount btrfs subvol=@ falló"
+      || { print_error "remount btrfs subvol=@ falló"; return 1; }
 
     # Crear paths y montar subvols hijos
     mkdir -p "$mnt/home" "$mnt/var/log" "$mnt/.snapshots"
@@ -546,7 +562,8 @@ format_partitions() {
         print_info "No quedan particiones/LVs seguros para montar como extra."
         break
       fi
-      error_msg "No hay candidatos seguros para ${partition_name[i]}. Revisa el particionado/LVM antes de continuar."
+      print_error "No hay candidatos seguros para '${partition_name[i]}'. Revisa el particionado/LVM."
+      return 1
     fi
     print_partition_hint "${partition_name[i]}"
     echo -e "Select ${BYellow}${partition_name[i]}${Reset} partition:\n"
@@ -808,7 +825,11 @@ install_base_system() {
     iputils inetutils \
     parted efibootmgr
 
-  [[ $? -ne 0 ]] && error_msg "Installing base system to ${MOUNTPOINT} failed. Check error messages above."
+  if [[ $? -ne 0 ]]; then
+    print_error "pacstrap a ${MOUNTPOINT} falló. Causas comunes: red caída, mirror lento/corrupto, espacio insuficiente en /."
+    print_warning "Las particiones siguen montadas — puedes reintentar Initial Setup (mirrors) y luego este paso."
+    return 1
+  fi
 
   # Servicios base habilitados para primer boot
   arch_chroot "systemctl enable NetworkManager.service"
@@ -864,12 +885,12 @@ configure_fstab() {
   if [[ $UEFI -eq 1 ]]; then
     print_info "UEFI → fstab usando PARTUUID (estable ante reformats y cambios de orden)."
     genfstab -t PARTUUID -p "${MOUNTPOINT}" >>"${MOUNTPOINT}"/etc/fstab \
-      || error_msg "genfstab falló"
+      || { print_error "genfstab -t PARTUUID falló. ¿Está / montado en ${MOUNTPOINT}?"; return 1; }
     fstab="PARTUUID"
   else
     print_info "BIOS → fstab usando UUID (estable a nivel filesystem)."
     genfstab -U -p "${MOUNTPOINT}" >>"${MOUNTPOINT}"/etc/fstab \
-      || error_msg "genfstab falló"
+      || { print_error "genfstab -U falló. ¿Está / montado en ${MOUNTPOINT}?"; return 1; }
     fstab="UUID"
   fi
 
@@ -985,7 +1006,11 @@ configure_mkinitcpio() {
 install_bootloader() {
   print_title "BOOTLOADER - https://wiki.archlinux.org/index.php/Bootloader"
   print_info "AUI-X usa UEFI + systemd-boot. No hay ruta BIOS/legacy."
-  [[ $UEFI -eq 1 ]] || error_msg "UEFI no detectado; no se instala bootloader legacy."
+  if [[ $UEFI -ne 1 ]]; then
+    print_error "UEFI no detectado. AUI-X no soporta BIOS/legacy."
+    print_warning "Re-bootea el live USB en modo UEFI desde el menú de boot del firmware."
+    return 1
+  fi
   bootloader="systemd-boot"
   print_success "Bootloader seleccionado: systemd-boot"
 }
@@ -1013,7 +1038,8 @@ _kernel_cmdline() {
   local cmdline
 
   if [[ -z "$root_spec" ]]; then
-    error_msg "ROOT_MOUNTPOINT vacío; revisa que el paso de particionado montó / correctamente."
+    print_error "ROOT_MOUNTPOINT vacío; revisa que el paso de particionado montó / correctamente."
+    return 1
   fi
 
   if [[ $LUKS -eq 1 ]]; then
@@ -1046,7 +1072,11 @@ configure_bootloader() {
   systemd-boot)
     print_title "SYSTEMD-BOOT - https://wiki.archlinux.org/title/Systemd-boot"
     print_info "Instalando systemd-boot con entradas duales: kernel primario + linux-lts (recovery)."
-    [[ "$EFI_MOUNTPOINT" == "/boot" ]] || error_msg "systemd-boot requiere ESP montada en /boot."
+    if [[ "$EFI_MOUNTPOINT" != "/boot" ]]; then
+      print_error "systemd-boot requiere ESP montada en /boot (actual: ${EFI_MOUNTPOINT})."
+      print_warning "Vuelve al paso de particionado y monta la ESP en /boot."
+      return 1
+    fi
 
     # Pre-check ESP: necesitamos ~256MB libres para zen+lts (vmlinuz ~12MB c/u),
     # initramfs zstd-19 (~60MB c/u), microcode (~10MB), systemd-boot binary (~2MB).
@@ -1058,7 +1088,10 @@ configure_bootloader() {
       print_danger "Se recomiendan ≥256MB para zen + linux-lts + initramfs + microcode."
       print_danger "Con esta ESP, regeneraciones futuras de initramfs pueden fallar y dejar el sistema sin boot."
       read_input_text "Continuar a tu propio riesgo?"
-      [[ $OPTION != y ]] && error_msg "Aborted by user — repartition ESP con ≥512MB."
+      if [[ $OPTION != y ]]; then
+        print_warning "ESP pequeña rechazada. Vuelve al paso 2 (Partition Scheme) y dale ≥512MB."
+        return 1
+      fi
     fi
 
     # Pre-check ESP partition type: el firmware UEFI sólo enumera particiones marcadas
@@ -1088,12 +1121,14 @@ configure_bootloader() {
     # y también escribe /EFI/BOOT/BOOTX64.EFI como fallback. --graceful tolera
     # warnings menores (típicos en chroot) sin abortar todo el install.
     arch_chroot "bootctl --esp-path=${EFI_MOUNTPOINT} install --graceful" \
-      || error_msg "bootctl install falló; el sistema no quedaría booteable."
+      || { print_error "bootctl install falló. Revisa que la ESP esté montada y el sistema sea UEFI."; return 1; }
 
     # VERIFICACIÓN 1: ¿se copió el binario systemd-boot a /EFI/systemd/?
     local sb_bin="${MOUNTPOINT}${EFI_MOUNTPOINT}/EFI/systemd/systemd-bootx64.efi"
-    [[ -f "$sb_bin" ]] \
-      || error_msg "systemd-bootx64.efi NO se copió a la ESP. bootctl falló silenciosamente."
+    if [[ ! -f "$sb_bin" ]]; then
+      print_error "systemd-bootx64.efi NO se copió a la ESP. bootctl falló silenciosamente."
+      return 1
+    fi
 
     # VERIFICACIÓN 2 (CRÍTICA): forzar /EFI/BOOT/BOOTX64.EFI como fallback.
     # Es el path que CUALQUIER firmware UEFI ejecuta cuando no hay NVRAM entry.
@@ -1104,7 +1139,7 @@ configure_bootloader() {
     mkdir -p "$fallback_dir"
     if [[ ! -f "$fallback_bin" ]] || ! cmp -s "$sb_bin" "$fallback_bin"; then
       cp "$sb_bin" "$fallback_bin" \
-        || error_msg "No se pudo escribir el fallback ${fallback_bin}"
+        || { print_error "No se pudo escribir el fallback ${fallback_bin}. ESP llena o read-only?"; return 1; }
       print_success "Fallback /EFI/BOOT/BOOTX64.EFI escrito (rescate ante NVRAM inestable / VMs)."
     else
       print_info "Fallback /EFI/BOOT/BOOTX64.EFI ya presente."
@@ -1133,7 +1168,7 @@ configure_bootloader() {
     fi
 
     local cmdline kernels k entry_path primary_entry_written
-    cmdline=$(_kernel_cmdline)
+    cmdline=$(_kernel_cmdline) || return 1
     primary_entry_written=0
 
     # Detectar kernels instalados
@@ -1166,7 +1201,11 @@ options  ${cmdline}
 EOF
       primary_entry_written=1
     done
-    [[ $primary_entry_written -ne 1 ]] && error_msg "No se generó arch.conf para ${KERNEL_PRIMARY}; revisa que ${KERNEL_PRIMARY} quedó instalado en /boot."
+    if [[ $primary_entry_written -ne 1 ]]; then
+      print_error "No se generó arch.conf para ${KERNEL_PRIMARY}. ¿/boot/vmlinuz-${KERNEL_PRIMARY} existe?"
+      print_warning "Vuelve al paso 3 (Install Base System) — el kernel no quedó en /boot."
+      return 1
+    fi
 
     # Entry de RESCUE para linux-lts (recovery, red de seguridad)
     if arch_chroot "pacman -Q linux-lts" >/dev/null 2>&1; then
@@ -1231,7 +1270,11 @@ EOF
   rm -f "${MOUNTPOINT}"/etc/sudoers.d/90-aurbuild
   arch_chroot "userdel -r aurbuild >/dev/null 2>&1 || true"
 
-  [[ $ret -ne 0 ]] && error_msg "Installing paru failed. Check network/AUR/build output above."
+  if [[ $ret -ne 0 ]]; then
+    print_error "Build de paru falló. Revisa logs (network/AUR/build) y reintenta."
+    print_info "AUR helper es opcional — puedes continuar sin él e instalarlo post-reboot."
+    return 1
+  fi
   print_success "paru instalado en el sistema nuevo."
   pause_function
 }
@@ -1513,58 +1556,57 @@ while true; do
   echo ""
   read_input_options
   for OPT in "${OPTIONS[@]}"; do
+    # Patrón uniforme: cada paso retorna 0 (éxito → checklist=1) o 1 (cancel/fallo
+    # → checklist queda en 0, mensaje al usuario, vuelve al menú). NUNCA exit.
     case "$OPT" in
     1)
-      initial_setup
-      checklist[1]=1
+      if initial_setup; then checklist[1]=1
+      else print_warning "Paso 1 (Initial Setup) cancelado o falló. Reintentar cuando quieras."; fi
       ;;
     2)
       umount_partitions
-      create_partition_scheme
-      format_partitions
-      checklist[2]=1
+      if create_partition_scheme && format_partitions; then checklist[2]=1
+      else print_warning "Paso 2 (Partition Scheme) cancelado o falló. Particiones pueden estar a medias — revisa con 'lsblk' antes de reintentar."; fi
       ;;
     3)
-      install_base_system
-      configure_keymap
-      checklist[3]=1
+      if install_base_system && configure_keymap; then checklist[3]=1
+      else print_warning "Paso 3 (Install Base) falló. Revisa red/mirrors y reintenta."; fi
       ;;
     4)
-      configure_fstab
-      checklist[4]=1
+      if configure_fstab; then checklist[4]=1
+      else print_warning "Paso 4 (Fstab) falló. Verifica que ${MOUNTPOINT} esté montado correctamente."; fi
       ;;
     5)
-      configure_hostname
-      checklist[5]=1
+      if configure_hostname; then checklist[5]=1
+      else print_warning "Paso 5 (Hostname) cancelado."; fi
       ;;
     6)
-      configure_timezone
-      checklist[6]=1
+      if configure_timezone; then checklist[6]=1
+      else print_warning "Paso 6 (Timezone) cancelado."; fi
       ;;
     7)
-      configure_hardwareclock
-      checklist[7]=1
+      if configure_hardwareclock; then checklist[7]=1
+      else print_warning "Paso 7 (Hardware Clock) cancelado."; fi
       ;;
     8)
-      configure_locale
-      checklist[8]=1
+      if configure_locale; then checklist[8]=1
+      else print_warning "Paso 8 (Locale) cancelado."; fi
       ;;
     9)
-      configure_mkinitcpio
-      checklist[9]=1
+      if configure_mkinitcpio; then checklist[9]=1
+      else print_warning "Paso 9 (Mkinitcpio) falló. Revisa /etc/mkinitcpio.conf y reintenta."; fi
       ;;
     10)
-      install_bootloader
-      configure_bootloader
-      checklist[10]=1
+      if install_bootloader && configure_bootloader; then checklist[10]=1
+      else print_warning "Paso 10 (Bootloader) falló. Sin bootloader el sistema NO arrancará."; fi
       ;;
     11)
-      root_password
-      checklist[11]=1
+      if root_password; then checklist[11]=1
+      else print_warning "Paso 11 (Root Password) cancelado. Sin root password no podrás loguear post-install."; fi
       ;;
     12)
-      install_aur_helper
-      checklist[12]=1
+      if install_aur_helper; then checklist[12]=1
+      else print_warning "Paso 12 (AUR helper) opcional saltado/falló."; fi
       ;;
     "d")
       finish
