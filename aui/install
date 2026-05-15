@@ -14,10 +14,22 @@ fi
 #SELECT KEYMAP {{{
 select_keymap() {
   print_title "KEYMAP - https://wiki.archlinux.org/index.php/KEYMAP"
-  keymap_list=("ANSI-dvorak" "amiga-de" "amiga-us" "applkey" "atari-de" "atari-se" "atari-uk-falcon" "atari-us" "azerty" "backspace" "bashkir" "be-latin1" "bg-cp1251" "bg-cp855" "bg_bds-cp1251" "bg_bds-utf8" "bg_pho-cp1251" "bg_pho-utf8" "br-abnt" "br-abnt2" "br-latin1-abnt2" "br-latin1-us" "by" "by-cp1251" "bywin-cp1251" "cf" "colemak" "croat" "ctrl" "cz" "cz-cp1250" "cz-lat2" "cz-lat2-prog" "cz-qwertz" "cz-us-qwertz" "de" "de-latin1" "de-latin1-nodeadkeys" "de-mobii" "de_CH-latin1" "de_alt_UTF-8" "defkeymap" "defkeymap_V1.0" "dk" "dk-latin1" "dvorak" "dvorak-ca-fr" "dvorak-es" "dvorak-fr" "dvorak-l" "dvorak-la" "dvorak-programmer" "dvorak-r" "dvorak-ru" "dvorak-sv-a1" "dvorak-sv-a5" "dvorak-uk" "emacs" "emacs2" "es" "es-cp850" "es-olpc" "et" "et-nodeadkeys" "euro" "euro1" "euro2" "fi" "fr" "fr-bepo" "fr-bepo-latin9" "fr-latin1" "fr-latin9" "fr-pc" "fr_CH" "fr_CH-latin1" "gr" "gr-pc" "hu" "hu101" "il" "il-heb" "il-phonetic" "is-latin1" "is-latin1-us" "it" "it-ibm" "it2" "jp106" "kazakh" "keypad" "ky_alt_sh-UTF-8" "kyrgyz" "la-latin1" "lt" "lt.baltic" "lt.l4" "lv" "lv-tilde" "mac-be" "mac-de-latin1" "mac-de-latin1-nodeadkeys" "mac-de_CH" "mac-dk-latin1" "mac-dvorak" "mac-es" "mac-euro" "mac-euro2" "mac-fi-latin1" "mac-fr" "mac-fr_CH-latin1" "mac-it" "mac-pl" "mac-pt-latin1" "mac-se" "mac-template" "mac-uk" "mac-us" "mk" "mk-cp1251" "mk-utf" "mk0" "nl" "nl2" "no" "no-dvorak" "no-latin1" "pc110" "pl" "pl1" "pl2" "pl3" "pl4" "pt-latin1" "pt-latin9" "pt-olpc" "ro" "ro_std" "ro_win" "ru" "ru-cp1251" "ru-ms" "ru-yawerty" "ru1" "ru2" "ru3" "ru4" "ru_win" "ruwin_alt-CP1251" "ruwin_alt-KOI8-R" "ruwin_alt-UTF-8" "ruwin_alt_sh-UTF-8" "ruwin_cplk-CP1251" "ruwin_cplk-KOI8-R" "ruwin_cplk-UTF-8" "ruwin_ct_sh-CP1251" "ruwin_ct_sh-KOI8-R" "ruwin_ct_sh-UTF-8" "ruwin_ctrl-CP1251" "ruwin_ctrl-KOI8-R" "ruwin_ctrl-UTF-8" "se-fi-ir209" "se-fi-lat6" "se-ir209" "se-lat6" "sg" "sg-latin1" "sg-latin1-lk450" "sk-prog-qwerty" "sk-prog-qwertz" "sk-qwerty" "sk-qwertz" "slovene" "sr-cy" "sun-pl" "sun-pl-altgraph" "sundvorak" "sunkeymap" "sunt4-es" "sunt4-fi-latin1" "sunt4-no-latin1" "sunt5-cz-us" "sunt5-de-latin1" "sunt5-es" "sunt5-fi-latin1" "sunt5-fr-latin1" "sunt5-ru" "sunt5-uk" "sunt5-us-cz" "sunt6-uk" "sv-latin1" "tj_alt-UTF8" "tr_f-latin5" "tr_q-latin5" "tralt" "trf" "trf-fgGIod" "trq" "ttwin_alt-UTF-8" "ttwin_cplk-UTF-8" "ttwin_ct_sh-UTF-8" "ttwin_ctrl-UTF-8" "ua" "ua-cp1251" "ua-utf" "ua-utf-ws" "ua-ws" "uk" "unicode" "us" "us-acentos" "wangbe" "wangbe2" "windowkeys")
+  # Lista reducida a las 10 más usadas. Para layouts exóticos, edita /etc/vconsole.conf
+  # post-install (lista completa en /usr/share/kbd/keymaps/).
+  keymap_list=(
+    "us"           # US English (default global)
+    "la-latin1"    # Spanish Latin America
+    "es"           # Spanish Spain
+    "br-abnt2"     # Portuguese Brazil
+    "pt-latin1"    # Portuguese Portugal
+    "uk"           # British English
+    "de-latin1"    # German
+    "fr-latin1"    # French
+    "it"           # Italian
+    "dvorak"       # Dvorak (alternativo)
+  )
   PS3="$prompt1"
-  print_info "The KEYMAP variable is specified in the /etc/rc.conf file. It defines what keymap the keyboard is in the virtual consoles. Keytable files are provided by the kbd package."
-  echo "keymap list in /usr/share/kbd/keymaps"
+  print_info "Layout de teclado para la consola (post-install editable en /etc/vconsole.conf)."
   select KEYMAP in "${keymap_list[@]}"; do
     if contains_element "$KEYMAP" "${keymap_list[@]}"; then
       loadkeys "$KEYMAP"
@@ -29,65 +41,50 @@ select_keymap() {
 }
 #}}}
 #DEFAULT EDITOR {{{
+# Sin menú: nano por default. Razón: ya viene en el live ISO, simple, suficiente
+# para editar configs si algo falla. Cambia post-install editando /etc/environment
+# si prefieres vim u otro.
 select_editor() {
-  print_title "DEFAULT EDITOR"
-  editors_list=("emacs" "nano" "vi" "vim" "neovim" "zile")
-  PS3="$prompt1"
-  echo -e "Select editor\n"
-  select EDITOR in "${editors_list[@]}"; do
-    if contains_element "$EDITOR" "${editors_list[@]}"; then
-      package_install "$EDITOR"
-      break
-    else
-      invalid_option
-    fi
-  done
+  EDITOR="nano"
+  command -v nano >/dev/null 2>&1 || pacman -Sy --noconfirm --needed nano
 }
 #}}}
 #MIRRORLIST {{{
+# Auto-detección de país vía ifconfig.co + reflector. Sin menús ni editor manual.
+# Fallback a mirrors globales si la auto-detección falla (offline / firewall / API caída).
 configure_mirrorlist() {
-  local countries_code=("AU" "AT" "BD" "BY" "BE" "BA" "BR" "BG" "CA" "CL" "CN" "CO" "HR" "CZ" "DK" "EC" "FI" "FR" "GE" "DE" "GR" "HK" "HU" "IS" "IN" "ID" "IR" "IE" "IL" "IT" "JP" "KZ" "KE" "LV" "LT" "LU" "NL" "NC" "NZ" "MK" "NO" "PY" "PH" "PL" "PT" "RO" "RU" "RS" "SG" "SK" "SI" "ZA" "KR" "ES" "SE" "CH" "TW" "TH" "TR" "UA" "GB" "US" "VN")
-  local countries_name=("Australia" "Austria" "Bangladesh" "Belarus" "Belgium" "Bosnia and Herzegovina" "Brazil" "Bulgaria" "Canada" "Chile" "China" "Colombia" "Croatia" "Czech Republic" "Denmark" "Ecuador" "Finland" "France" "Georgia" "Germany" "Greece" "Hong Kong" "Hungary" "Iceland" "India" "Indonesia" "Iran" "Ireland" "Israel" "Italy" "Japan" "Kazakhstan" "Kenya" "Latvia" "Lithuania" "Luxembourg" "Netherlands" "New Caledonia" "New Zealand" "North Macedonia" "Norway" "Paraguay" "Philippines" "Poland" "Portugal" "Romania" "Russia" "Serbia" "Singapore" "Slovakia" "Slovenia" "South Africa" "South Korea" "Spain" "Sweden" "Switzerland" "Taiwan" "Thailand" "Turkey" "Ukraine" "United Kingdom" "United States" "Viet Nam")
-  country_list() {
-    #`reflector --list-countries | sed 's/[0-9]//g' | sed 's/^/"/g' | sed 's/,.*//g' | sed 's/ *$//g'  | sed 's/$/"/g' | sed -e :a -e '$!N; s/\n/ /; ta'`
-    PS3="$prompt1"
-    echo "Select your country:"
-    select country_name in "${countries_name[@]}"; do
-      if contains_element "$country_name" "${countries_name[@]}"; then
-        country_code=${countries_code[$((REPLY - 1))]}
-        break
-      else
-        invalid_option
-      fi
-    done
-  }
   print_title "MIRRORLIST - https://wiki.archlinux.org/index.php/Mirrors"
-  print_info "Usando reflector para obtener los mirrors más rápidos y recientes (reemplaza curl+sed+rankmirrors legacy)."
-  OPTION=n
-  while [[ $OPTION != y ]]; do
-    country_list
-    read_input_text "Confirm country: $country_name"
-  done
+  print_info "Auto-detectando país y generando mirrorlist con reflector (top 20 HTTPS por velocidad)."
 
-  # reflector ya está en el live ISO de Arch; si no, lo instalamos
-  if ! command -v reflector >/dev/null 2>&1; then
-    pacman -Sy --noconfirm --needed reflector
+  # Auto-detectar código de país via API pública (sólo 2 letras, e.g. "ES", "US")
+  country_code=$(curl -s --max-time 5 https://ifconfig.co/country-iso 2>/dev/null | tr -d '[:space:]')
+  if [[ ${#country_code} -ne 2 ]]; then
+    print_warning "Auto-detección de país falló. Usando mirrors globales (más lento pero funciona)."
+    country_code=""
+    country_name="Global"
+  else
+    # Nombre amigable para el menú (no crítico; sólo display)
+    country_name=$(curl -s --max-time 5 "https://ifconfig.co/country" 2>/dev/null | head -1 | tr -d '\n')
+    [[ -z "$country_name" ]] && country_name="$country_code"
+    print_info "País detectado: ${country_name} (${country_code})"
   fi
+
+  # reflector ya viene en el live ISO de Arch; instalar si falta
+  command -v reflector >/dev/null 2>&1 || pacman -Sy --noconfirm --needed reflector
 
   # Backup del mirrorlist original
   [[ ! -f /etc/pacman.d/mirrorlist.orig ]] && cp /etc/pacman.d/mirrorlist /etc/pacman.d/mirrorlist.orig
 
   # Genera mirrorlist: HTTPS, recientes (<12h), top 20 por velocidad
-  reflector \
-    --country "${country_code}" \
-    --protocol https \
-    --age 12 \
-    --latest 20 \
-    --sort rate \
-    --save /etc/pacman.d/mirrorlist
+  local args=(--protocol https --age 12 --latest 20 --sort rate --save /etc/pacman.d/mirrorlist)
+  [[ -n "$country_code" ]] && args=(--country "$country_code" "${args[@]}")
+  reflector "${args[@]}" \
+    || print_warning "reflector falló — sigo con el mirrorlist actual (puede ser lento)."
 
   chmod +r /etc/pacman.d/mirrorlist
-  $EDITOR /etc/pacman.d/mirrorlist
+  # Refresh DB para que los siguientes pacman/pacstrap usen los nuevos mirrors
+  pacman -Syy >/dev/null 2>&1 || true
+  print_success "Mirrorlist generado y DB refrescada."
 }
 #}}}
 #UMOUNT PARTITIONS {{{
@@ -250,8 +247,8 @@ setup_luks() {
 #SETUP LVM {{{
 setup_lvm() {
   print_title "LVM - https://wiki.archlinux.org/index.php/LVM"
-  print_info "LVM is a logical volume manager for the Linux kernel; it manages disk drives and similar mass-storage devices. "
-  print_info "Layout recomendado: LV root grande para pacstrap/KDE y LV home con el espacio restante."
+  print_info "LVM is a logical volume manager for the Linux kernel; it manages disk drives and similar mass-storage devices."
+  print_info "Layout default: single root LV ocupando el 100% del VG. /home queda como subdir de / (o subvol @home en btrfs)."
   if [[ $LUKS -eq 1 ]]; then
     pvcreate /dev/mapper/cryptroot || error_msg "pvcreate falló sobre /dev/mapper/cryptroot"
     vgcreate lvm /dev/mapper/cryptroot || error_msg "vgcreate lvm falló"
@@ -269,23 +266,23 @@ setup_lvm() {
       fi
     done
   fi
-  local lvm_modes=("Guided root+home (recommended)" "Manual")
+  local lvm_modes=("Guided root (recommended)" "Manual")
   PS3="$prompt1"
-  print_info "Guiado crea LV root para / y LV home para /home. En el siguiente paso se usará /dev/mapper/lvm-root como root, no la partición física cifrada."
+  print_info "Guiado: un solo LV 'root' = 100% del VG. En el siguiente paso elige /dev/mapper/lvm-root como /."
   echo -e "Select LVM layout:\n"
   select LVM_MODE in "${lvm_modes[@]}"; do
     case "$LVM_MODE" in
-      "Guided root+home (recommended)")
-        # Sin swap LV: ZRAM cubre el caso, sin hibernación soportada.
-        local root_size
-        print_info "Tamaño de root (/). Mínimo 30G para Arch+KDE/GNOME con cache pacman."
-        print_info "Recomendado para desktop con juegos/IDEs/contenedores: 60G o más."
-        print_info "Puedes escribir sólo el número (asume GB): '30' equivale a '30G'."
-        read_size "Root LV size" "60G" 30 root_size
-        lvcreate -L "$root_size" lvm -n root \
-          || error_msg "No se pudo crear LV root de $root_size. Usa un disco más grande o menor tamaño."
-
-        lvcreate -l 100%FREE lvm -n home || print_warning "No quedó espacio libre para LV home; puedes continuar sólo con root."
+      "Guided root (recommended)")
+        # Single-root layout: root LV ocupa el 100% del VG.
+        # Razón: la partición LUKS ya fue dimensionada por el usuario al particionar
+        # el disco; preguntar otra vez "cuánto para root" es redundante y confuso.
+        # /home queda como subdirectorio de /, no como LV separado — más simple,
+        # más flexible (mover archivos entre / y /home no necesita resize).
+        # Con btrfs subvols (@home), /home queda igualmente aislado para snapshots.
+        print_info "Layout: root LV ocupa el 100% del VG (sin LV-home separado)."
+        print_info "/home será un subdirectorio de / (o subvol @home si usas btrfs)."
+        lvcreate -l 100%FREE lvm -n root \
+          || error_msg "lvcreate root falló sobre el VG 'lvm'."
         LVM=1
         return
         ;;
@@ -819,40 +816,28 @@ configure_keymap() {
 #CONFIGURE FSTAB {{{
 configure_fstab() {
   print_title "FSTAB - https://wiki.archlinux.org/index.php/Fstab"
-  print_info "The /etc/fstab file contains static filesystem information. It defines how storage devices and partitions are to be mounted and integrated into the overall system. It is read by the mount command to determine which options to use when mounting a specific partition or partition."
+  # Auto-pick: PARTUUID en UEFI (estable, sobrevive reformats y cambios de orden de disco)
+  # o UUID en BIOS (estable a nivel filesystem). Ambos son la opción correcta en 2026;
+  # DEV (/dev/sdaN) es frágil porque cambia con USBs/orden de disco.
   if [[ ! -f ${MOUNTPOINT}/etc/fstab.aui ]]; then
     cp "${MOUNTPOINT}"/etc/fstab "${MOUNTPOINT}"/etc/fstab.aui
   else
     cp "${MOUNTPOINT}"/etc/fstab.aui "${MOUNTPOINT}"/etc/fstab
   fi
+
   if [[ $UEFI -eq 1 ]]; then
-    fstab_list=("DEV" "PARTUUID" "LABEL")
+    print_info "UEFI → fstab usando PARTUUID (estable ante reformats y cambios de orden)."
+    genfstab -t PARTUUID -p "${MOUNTPOINT}" >>"${MOUNTPOINT}"/etc/fstab \
+      || error_msg "genfstab falló"
+    fstab="PARTUUID"
   else
-    fstab_list=("DEV" "UUID" "LABEL")
+    print_info "BIOS → fstab usando UUID (estable a nivel filesystem)."
+    genfstab -U -p "${MOUNTPOINT}" >>"${MOUNTPOINT}"/etc/fstab \
+      || error_msg "genfstab falló"
+    fstab="UUID"
   fi
 
-  PS3="$prompt1"
-  echo -e "Configure fstab based on:"
-  select OPT in "${fstab_list[@]}"; do
-    case "$REPLY" in
-    1) genfstab -p "${MOUNTPOINT}" >>"${MOUNTPOINT}"/etc/fstab ;;
-    2)
-      if [[ $UEFI -eq 1 ]]; then
-        genfstab -t PARTUUID -p "${MOUNTPOINT}" >>"${MOUNTPOINT}"/etc/fstab
-      else
-        genfstab -U -p "${MOUNTPOINT}" >>"${MOUNTPOINT}"/etc/fstab
-      fi
-      ;;
-    3) genfstab -L -p "${MOUNTPOINT}" >>"${MOUNTPOINT}"/etc/fstab ;;
-    *) invalid_option ;;
-    esac
-    [[ -n $OPT ]] && break
-  done
-  fstab=$OPT
-  echo "Review your fstab"
-  [[ -f ${MOUNTPOINT}/swapfile ]] && sed -i "s/\\${MOUNTPOINT}//" "${MOUNTPOINT}"/etc/fstab
-  pause_function
-  $EDITOR "${MOUNTPOINT}"/etc/fstab
+  print_success "/etc/fstab generado. Revisable con: nano ${MOUNTPOINT}/etc/fstab"
 }
 #}}}
 #CONFIGURE HOSTNAME {{{
@@ -1034,8 +1019,76 @@ configure_bootloader() {
       [[ $OPTION != y ]] && error_msg "Aborted by user — repartition ESP con ≥512MB."
     fi
 
-    arch_chroot "bootctl --esp-path=${EFI_MOUNTPOINT} install" \
+    # Pre-check ESP partition type: el firmware UEFI sólo enumera particiones marcadas
+    # como "EFI System" (GPT GUID C12A7328-F81F-11D2-BA4B-00A0C93EC93B, type "ef00"
+    # en gdisk o "BOOT" flag en parted). Sin este flag, la ESP es invisible al boot.
+    local esp_dev esp_parttype
+    esp_dev=$(findmnt -no SOURCE "${MOUNTPOINT}${EFI_MOUNTPOINT}" 2>/dev/null)
+    if [[ -n "$esp_dev" ]]; then
+      esp_parttype=$(lsblk -no PARTTYPE "$esp_dev" 2>/dev/null | head -1)
+      if [[ "$esp_parttype" != "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" ]]; then
+        print_danger "PROBLEMA: ${esp_dev} NO tiene tipo 'EFI System Partition' (GPT EF00)."
+        print_danger "Tipo actual: ${esp_parttype:-<unknown>}"
+        print_danger "El firmware UEFI NO encontrará esta partición y el sistema no booteará."
+        print_warning "Intentando arreglar con sfdisk (sólo GPT)..."
+        local disk part_num
+        disk=$(lsblk -no PKNAME "$esp_dev" 2>/dev/null | head -1)
+        part_num=$(echo "$esp_dev" | grep -oE '[0-9]+$')
+        if [[ -n "$disk" && -n "$part_num" ]]; then
+          sfdisk --part-type "/dev/$disk" "$part_num" U 2>/dev/null \
+            && print_success "Tipo corregido a EFI System en /dev/${disk}${part_num}" \
+            || print_danger "sfdisk falló. Corrige manualmente con: gdisk /dev/${disk} → t → ${part_num} → ef00"
+        fi
+      fi
+    fi
+
+    # bootctl install: copia systemd-boot a /EFI/systemd/, escribe NVRAM entry,
+    # y también escribe /EFI/BOOT/BOOTX64.EFI como fallback. --graceful tolera
+    # warnings menores (típicos en chroot) sin abortar todo el install.
+    arch_chroot "bootctl --esp-path=${EFI_MOUNTPOINT} install --graceful" \
       || error_msg "bootctl install falló; el sistema no quedaría booteable."
+
+    # VERIFICACIÓN 1: ¿se copió el binario systemd-boot a /EFI/systemd/?
+    local sb_bin="${MOUNTPOINT}${EFI_MOUNTPOINT}/EFI/systemd/systemd-bootx64.efi"
+    [[ -f "$sb_bin" ]] \
+      || error_msg "systemd-bootx64.efi NO se copió a la ESP. bootctl falló silenciosamente."
+
+    # VERIFICACIÓN 2 (CRÍTICA): forzar /EFI/BOOT/BOOTX64.EFI como fallback.
+    # Es el path que CUALQUIER firmware UEFI ejecuta cuando no hay NVRAM entry.
+    # Sin esto, VirtualBox/QEMU/firmwares con NVRAM inestable no bootean nunca.
+    # Idempotente: copia sólo si falta o difiere.
+    local fallback_dir="${MOUNTPOINT}${EFI_MOUNTPOINT}/EFI/BOOT"
+    local fallback_bin="${fallback_dir}/BOOTX64.EFI"
+    mkdir -p "$fallback_dir"
+    if [[ ! -f "$fallback_bin" ]] || ! cmp -s "$sb_bin" "$fallback_bin"; then
+      cp "$sb_bin" "$fallback_bin" \
+        || error_msg "No se pudo escribir el fallback ${fallback_bin}"
+      print_success "Fallback /EFI/BOOT/BOOTX64.EFI escrito (rescate ante NVRAM inestable / VMs)."
+    else
+      print_info "Fallback /EFI/BOOT/BOOTX64.EFI ya presente."
+    fi
+
+    # VERIFICACIÓN 3: ¿existe la entrada NVRAM "Linux Boot Manager"?
+    # Si no, intentamos crearla manualmente con efibootmgr (más explícito que bootctl).
+    if [[ -d /sys/firmware/efi/efivars ]]; then
+      local bm_out
+      bm_out=$(arch_chroot "efibootmgr 2>/dev/null" 2>/dev/null || true)
+      if ! echo "$bm_out" | grep -qiE "linux boot manager|systemd-boot"; then
+        print_warning "efibootmgr no muestra entrada NVRAM para systemd-boot. Intentando crearla..."
+        local disk part_num
+        disk=$(lsblk -no PKNAME "$esp_dev" 2>/dev/null | head -1)
+        part_num=$(echo "$esp_dev" | grep -oE '[0-9]+$')
+        if [[ -n "$disk" && -n "$part_num" ]]; then
+          arch_chroot "efibootmgr --create --disk /dev/${disk} --part ${part_num} --label 'Linux Boot Manager' --loader '\\EFI\\systemd\\systemd-bootx64.efi'" \
+            && print_success "Entrada NVRAM creada manualmente." \
+            || print_warning "efibootmgr no pudo crear la entrada NVRAM. El sistema seguirá booteando via /EFI/BOOT/BOOTX64.EFI (fallback)."
+        fi
+      else
+        print_success "Entrada NVRAM 'Linux Boot Manager' presente en efibootmgr."
+      fi
+    else
+      print_warning "efivarfs no disponible — boot dependerá del fallback /EFI/BOOT/BOOTX64.EFI (esto está OK en VMs)."
+    fi
 
     local cmdline kernels k entry_path primary_entry_written
     cmdline=$(_kernel_cmdline)
@@ -1093,13 +1146,9 @@ ${ucode_lines}initrd   /initramfs-linux-lts.img
 options  ${cmdline} systemd.unit=rescue.target
 EOF
 
-    print_info "Permitir revisar los archivos del bootloader:"
-    pause_function
-    $EDITOR "${MOUNTPOINT}${EFI_MOUNTPOINT}/loader/loader.conf"
-    $EDITOR "${MOUNTPOINT}${EFI_MOUNTPOINT}/loader/entries/arch.conf"
+    print_success "Bootloader instalado. Revisable post-install con: nano ${EFI_MOUNTPOINT}/loader/loader.conf"
     ;;
   esac
-  pause_function
 }
 #}}}
 #ROOT PASSWORD {{{
@@ -1286,6 +1335,7 @@ RECOVERY_COMMON_EOF
 
   local boot_efi="${MOUNTPOINT}${EFI_MOUNTPOINT:-/boot}"
   local sb_binary="${boot_efi}/EFI/systemd/systemd-bootx64.efi"
+  local sb_fallback="${boot_efi}/EFI/BOOT/BOOTX64.EFI"
   local entries_count
   entries_count=$(ls "${boot_efi}/loader/entries/"*.conf 2>/dev/null | wc -l)
   local kernel_present=NO
@@ -1294,12 +1344,16 @@ RECOVERY_COMMON_EOF
   # LOAD-BEARING (sistema no boota sin esto)
   printf "  %-30s %s\n" "[BOOT] systemd-boot binary:" \
     "$([[ -f "$sb_binary" ]] && echo YES || echo "${BRed}NO — sistema NO booteará${Reset}")"
+  printf "  %-30s %s\n" "[BOOT] BOOTX64.EFI fallback:" \
+    "$([[ -f "$sb_fallback" ]] && echo "YES (rescate sin NVRAM)" || echo "${BRed}NO — riesgo en VMs${Reset}")"
   printf "  %-30s %s\n" "[BOOT] loader entries:" \
     "$([[ "$entries_count" -gt 0 ]] && echo "YES ($entries_count)" || echo "${BRed}NO — sin entradas${Reset}")"
   printf "  %-30s %s\n" "[BOOT] kernel en ESP:" \
     "$kernel_present"
   printf "  %-30s %s\n" "[BOOT] root password set:" \
     "$(arch_chroot 'passwd -S root 2>/dev/null | grep -qE " P | NP " && echo YES || echo NO' 2>/dev/null || echo UNKNOWN)"
+  printf "  %-30s %s\n" "[BOOT] NVRAM entry:" \
+    "$(arch_chroot 'efibootmgr 2>/dev/null | grep -qiE "linux boot manager|systemd-boot" && echo YES || echo NO' 2>/dev/null || echo "N/A (no efivarfs)")"
 
   # RECOVERY (puedes recuperar si algo falla)
   printf "  %-30s %s\n" "linux-lts instalado:" \
@@ -1319,8 +1373,8 @@ RECOVERY_COMMON_EOF
   printf "  %-30s %s\n" "Swap en disco:" \
     "none (ZRAM-only by design)"
 
-  # Si algún [BOOT] falla, gritamos
-  if [[ ! -f "$sb_binary" ]] || [[ "$entries_count" -eq 0 ]] || [[ "$kernel_present" != "YES" ]]; then
+  # Si algún [BOOT] crítico falla, gritamos. El fallback BOOTX64.EFI rescata casi todo.
+  if [[ ! -f "$sb_binary" ]] || [[ ! -f "$sb_fallback" ]] || [[ "$entries_count" -eq 0 ]] || [[ "$kernel_present" != "YES" ]]; then
     print_danger ""
     print_danger "PELIGRO: el bootloader/ESP no quedó completo. Si reinicias ahora, NO booteará."
     print_danger "Vuelve al paso 12 (Install Bootloader) antes de continuar."
@@ -1384,10 +1438,13 @@ check_boot_system
 check_connection
 check_trim
 pacman -Sy
+# Auto-setup: nano como editor por default (sin menú; AUI-X opina por ti).
+select_editor
+checklist[2]=1
 while true; do
   print_title "ARCHLINUX ULTIMATE INSTALL - https://github.com/helmuthdu/aui"
   echo " 1) $(mainmenu_item "${checklist[1]}" "Select Keymap" "${KEYMAP}")"
-  echo " 2) $(mainmenu_item "${checklist[2]}" "Select Editor" "${EDITOR}")"
+  echo " 2) $(mainmenu_item "${checklist[2]}" "Editor (auto: nano)" "${EDITOR}")"
   echo " 3) $(mainmenu_item "${checklist[3]}" "Configure Mirrorlist" "${country_name} (${country_code})")"
   echo " 4) $(mainmenu_item "${checklist[4]}" "Partition Scheme" "${partition_layout}: ${partition}(${filesystem}) [swap=zram]")"
   echo " 5) $(mainmenu_item "${checklist[5]}" "Install Base System")"
