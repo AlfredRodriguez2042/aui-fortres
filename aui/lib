@@ -344,6 +344,46 @@ Run this script after your first boot with archlinux (as root)
   read_input_text() { #{{{
     read_confirm "$1" "n" "${2:-}"
   } #}}}
+  # read_size: lectura intuitiva de tamaños de LV/partición/swap. {{{
+  # Acepta: "30", "30G", "30g", "30GB", "30gb", "500M", "500m", "500MB".
+  # Sólo dígitos → asume G. Valida mínimo en GB. Reintenta hasta input válido.
+  # Args:  $1 prompt (sin sufijo)   $2 default (ej "30G")
+  #        $3 min_gb (entero)       $4 nombre de variable de salida (nameref)
+  # Ejemplo:
+  #   read_size "Root LV size" "30G" 30 root_size
+  #   → setea $root_size con valor normalizado tipo "30G" o "500M"
+  read_size() { #{{{
+    local _prompt="$1" _default="$2" _min_gb="$3"
+    local -n _out_ref="$4"
+    local _input _num _unit _normalized _gb
+    while true; do
+      printf "%s [ej: %s, mínimo %sG]: " "$_prompt" "$_default" "$_min_gb"
+      read -r _input
+      _input="${_input:-$_default}"
+      # Tolerar espacios y mayúsculas: "30 G" o "30g" o "30Gb"
+      _input="${_input// /}"
+      if [[ "$_input" =~ ^([0-9]+)([GgMm][Bb]?)?$ ]]; then
+        _num="${BASH_REMATCH[1]}"
+        _unit="${BASH_REMATCH[2]^^}"
+        _unit="${_unit%B}"  # "GB"→"G", "MB"→"M"
+        [[ -z "$_unit" ]] && _unit="G"  # sólo dígitos → asumir G
+        _normalized="${_num}${_unit}"
+        if [[ "$_unit" == "G" ]]; then
+          _gb="$_num"
+        else
+          _gb=$(( _num / 1024 ))
+        fi
+        if (( _gb < _min_gb )); then
+          echo "  ✗ ${_normalized} es menor que el mínimo ${_min_gb}G. Reintenta."
+          continue
+        fi
+        _out_ref="$_normalized"
+        return 0
+      else
+        echo "  ✗ Formato inválido: '$_input'. Usa por ejemplo: 30, 30G, 500M."
+      fi
+    done
+  } #}}}
   read_input_options() { #{{{
     local line
     local packages
@@ -387,6 +427,14 @@ Run this script after your first boot with archlinux (as root)
   print_danger() { #{{{
     T_COLS=$(tput cols)
     echo -e "${BRed}$1${Reset}\n" | fold -sw $(( T_COLS - 1 ))
+  } #}}}
+  print_success() { #{{{
+    T_COLS=$(tput cols)
+    echo -e "${BGreen}\xe2\x9c\x93 $1${Reset}\n" | fold -sw $(( T_COLS - 1 ))
+  } #}}}
+  print_error() { #{{{
+    T_COLS=$(tput cols)
+    echo -e "${BRed}\xe2\x9c\x97 ERROR: $1${Reset}\n" | fold -sw $(( T_COLS - 1 )) >&2
   } #}}}
   start_module() { #{{{
     modprobe "$1"

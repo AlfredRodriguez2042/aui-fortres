@@ -585,7 +585,8 @@ while true; do
   echo " 7) $(mainmenu_item "${checklist[7]}" "Dual monitor")"
   echo " 8) $(mainmenu_item "${checklist[8]}" "VPN client (optional)")"
   echo " 9) $(mainmenu_item "${checklist[9]}" "Bluetooth (optional)")"
-  echo "10) $(mainmenu_item "${checklist[10]}" "ZRAM (optional)")"
+  echo ""
+  echo "  (ZRAM ya está activo automáticamente desde Phase 1 vía systemd-zram-generator)"
   echo ""
   echo " d) Done — finalizar y reboot"
   echo ""
@@ -601,7 +602,6 @@ while true; do
       7)  configure_dual_monitor; checklist[7]=1 ;;
       8)  install_vpn;            checklist[8]=1 ;;
       9)  install_bluetooth;      checklist[9]=1 ;;
-      10) configure_zram;         checklist[10]=1 ;;
       "d") finish ;;
       *) invalid_option ;;
     esac
