@@ -14,93 +14,65 @@ fi
 #SELECT KEYMAP {{{
 select_keymap() {
   print_title "KEYMAP - https://wiki.archlinux.org/index.php/KEYMAP"
-  # Lista reducida a las 10 más usadas. Para layouts exóticos, edita /etc/vconsole.conf
-  # post-install (lista completa en /usr/share/kbd/keymaps/).
-  keymap_list=(
-    "us"           # US English (default global)
-    "la-latin1"    # Spanish Latin America
-    "es"           # Spanish Spain
-    "br-abnt2"     # Portuguese Brazil
-    "pt-latin1"    # Portuguese Portugal
-    "uk"           # British English
-    "de-latin1"    # German
-    "fr-latin1"    # French
-    "it"           # Italian
-    "dvorak"       # Dvorak (alternativo)
-  )
+  local keymap
+  local keymap_list=("us" "la-latin1" "es" "br-abnt2" "pt-latin1" "uk" "de-latin1" "fr-latin1" "it" "dvorak")
   PS3="$prompt1"
-  print_info "Layout de teclado para la consola (post-install editable en /etc/vconsole.conf)."
-  select KEYMAP in "${keymap_list[@]}"; do
-    if contains_element "$KEYMAP" "${keymap_list[@]}"; then
-      loadkeys "$KEYMAP"
-      break
+  print_info "Console keymap (editable post-install in /etc/vconsole.conf)."
+  select keymap in "${keymap_list[@]}"; do
+    if contains_element "$keymap" "${keymap_list[@]}"; then
+      loadkeys "$keymap" || { print_error "Could not load keymap: $keymap"; return 1; }
+      KEYMAP="$keymap"
+      return 0
     else
       invalid_option
     fi
   done
 }
 #}}}
-#DEFAULT EDITOR {{{
-# Sin menú: nano por default. Razón: ya viene en el live ISO, simple, suficiente
-# para editar configs si algo falla. Cambia post-install editando /etc/environment
-# si prefieres vim u otro.
-select_editor() {
+#LIVE EDITOR {{{
+configure_live_editor() {
   EDITOR="nano"
-  command -v nano >/dev/null 2>&1 || pacman -Sy --noconfirm --needed nano
+  command -v "$EDITOR" >/dev/null 2>&1 && return 0
+  pacman -Sy --noconfirm --needed "$EDITOR" ||
+    { print_error "Could not install live editor: $EDITOR"; return 1; }
 }
 #}}}
 #MIRRORLIST {{{
-# Auto-detección de país vía ifconfig.co + reflector. Sin menús ni editor manual.
-# Fallback a mirrors globales si la auto-detección falla (offline / firewall / API caída).
 configure_mirrorlist() {
   print_title "MIRRORLIST - https://wiki.archlinux.org/index.php/Mirrors"
-  print_info "Auto-detectando país y generando mirrorlist con reflector (top 20 HTTPS por velocidad)."
-
-  # Auto-detectar código de país via API pública (sólo 2 letras, e.g. "ES", "US")
   country_code=$(curl -s --max-time 5 https://ifconfig.co/country-iso 2>/dev/null | tr -d '[:space:]')
   if [[ ${#country_code} -ne 2 ]]; then
-    print_warning "Auto-detección de país falló. Usando mirrors globales (más lento pero funciona)."
+    print_warning "Country auto-detect failed. Using global mirrors."
     country_code=""
     country_name="Global"
   else
-    # Nombre amigable para el menú (no crítico; sólo display)
     country_name=$(curl -s --max-time 5 "https://ifconfig.co/country" 2>/dev/null | head -1 | tr -d '\n')
     [[ -z "$country_name" ]] && country_name="$country_code"
-    print_info "País detectado: ${country_name} (${country_code})"
+    print_info "Detected country: ${country_name} (${country_code})"
   fi
 
-  # reflector ya viene en el live ISO de Arch; instalar si falta
   command -v reflector >/dev/null 2>&1 || pacman -Sy --noconfirm --needed reflector
-
-  # Backup del mirrorlist original
   [[ ! -f /etc/pacman.d/mirrorlist.orig ]] && cp /etc/pacman.d/mirrorlist /etc/pacman.d/mirrorlist.orig
 
-  # Genera mirrorlist: HTTPS, recientes (<12h), top 20 por velocidad
   local args=(--protocol https --age 12 --latest 20 --sort rate --save /etc/pacman.d/mirrorlist)
   [[ -n "$country_code" ]] && args=(--country "$country_code" "${args[@]}")
-  reflector "${args[@]}" \
-    || print_warning "reflector falló — sigo con el mirrorlist actual (puede ser lento)."
+  reflector "${args[@]}" || print_warning "reflector failed — using current mirrorlist."
 
   chmod +r /etc/pacman.d/mirrorlist
-  # Refresh DB para que los siguientes pacman/pacstrap usen los nuevos mirrors
   pacman -Syy >/dev/null 2>&1 || true
-  print_success "Mirrorlist generado y DB refrescada."
+  print_success "Mirrorlist generated."
 }
 #}}}
 #UMOUNT PARTITIONS {{{
 umount_partitions() {
-  # findmnt anclado al MOUNTPOINT real (evita matches falsos como /mnt-old, /mnt-backup).
-  # -R recursivo, -n sin header, -o TARGET sólo paths, ordenamos por profundidad inversa
-  # para desmontar primero los hijos.
-  local mp_list
+  # findmnt anchored to MOUNTPOINT (avoids /mnt-old/backup false matches). Reverse depth.
+  local mp_list mp
   mapfile -t mp_list < <(findmnt -R -n -o TARGET "${MOUNTPOINT}" 2>/dev/null | tac)
   swapoff -a 2>/dev/null || true
-  local mp
   for mp in "${mp_list[@]}"; do
     umount "$mp" 2>/dev/null || umount -l "$mp" 2>/dev/null || true
   done
   vgchange -an lvm >/dev/null 2>&1 || true
-  # Cierra cualquier mapper LUKS abierto (cryptroot canónico; 'crypt' legacy por compat).
   cryptsetup close cryptroot >/dev/null 2>&1 || true
   cryptsetup close crypt >/dev/null 2>&1 || true
 }
@@ -109,18 +81,16 @@ umount_partitions() {
 select_device() {
   mapfile -t devices_list < <(lsblk -d | awk '{print "/dev/" $1}' | grep -E 'sd|hd|vd|nvme|mmcblk')
   if [[ ${#devices_list[@]} -eq 0 ]]; then
-    print_error "No se detectaron discos. Verifica que el disco esté conectado."
+    print_error "No disks detected."
     return 1
   fi
-  devices_list+=("Volver")
+  devices_list+=("Back")
   PS3="$prompt1"
-  echo -e "Attached Devices:\n"
+  echo -e "Attached devices:\n"
   lsblk -lnp -I 2,3,8,9,22,34,56,57,58,65,66,67,68,69,70,71,72,91,128,129,130,131,132,133,134,135,259 | awk '{print $1,$4,$6,$7}' | column -t
-  echo -e "\n"
-  echo -e "Select device to partition (o 'Volver' para abortar):\n"
+  echo -e "\nSelect device to partition (or 'Back' to abort):\n"
   select device in "${devices_list[@]}"; do
-    if [[ "$device" == "Volver" ]]; then
-      print_info "Selección de disco cancelada."
+    if [[ "$device" == "Back" ]]; then
       return 1
     elif contains_element "${device}" "${devices_list[@]}"; then
       break
@@ -131,49 +101,52 @@ select_device() {
   BOOT_MOUNTPOINT=$device
 }
 #}}}
+#PARTITION HELPERS {{{
+is_efi_system_partition() {
+  local parttype parttypename
+  parttype=$(lsblk -no PARTTYPE "$1" 2>/dev/null | head -1 | tr '[:upper:]' '[:lower:]')
+  parttypename=$(lsblk -no PARTTYPENAME "$1" 2>/dev/null | head -1 | tr '[:upper:]' '[:lower:]')
+  [[ "$parttype" == "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" ]] ||
+    [[ "$parttype" == "0xef" ]] ||
+    [[ "$parttypename" == *"efi system"* ]]
+}
+#}}}
 #CREATE PARTITION SCHEME {{{
 create_partition_scheme() {
   LUKS=0
   LVM=0
   print_title "https://wiki.archlinux.org/index.php/Partitioning"
-  print_info "Partitioning a hard drive allows one to logically divide the available space into sections that can be accessed independently of one another."
-  print_info "Default del proyecto: cifrado LUKS desde el particionado inicial."
-  print_warning "Sin LUKS no podrás usar luego fido2-unlock/keyfile-usb de fortress para root."
-  print_warning "Maintain Current does not create LUKS; úsalo sólo si ya preparaste el cifrado manualmente."
-  partition_layouts=("LVM+LUKS (default, recommended)" "Default (NO encryption)" "LVM (NO encryption)" "Maintain Current" "Volver al menú principal")
+  print_info "Default: LUKS encryption from initial partitioning."
+  print_warning "Without LUKS you cannot use fido2-unlock/keyfile-usb of fortress later."
+  print_warning "Maintain Current does not create LUKS; use only if you set up encryption manually."
+  partition_layouts=("LVM+LUKS (default, recommended)" "Default (NO encryption)" "LVM (NO encryption)" "Maintain Current" "Back")
   PS3="$prompt1"
   echo -e "Select partition scheme:"
   select OPT in "${partition_layouts[@]}"; do
     partition_layout=$OPT
     case "$OPT" in
       "LVM+LUKS (default, recommended)")
-        create_partition || { print_warning "Particionado cancelado."; return 1; }
-        setup_luks       || { print_warning "Setup LUKS cancelado/falló."; return 1; }
-        setup_lvm        || { print_warning "Setup LVM falló."; return 1; }
+        create_partition && setup_luks && setup_lvm || return 1
         ;;
       "Default (NO encryption)")
-        print_danger "Seleccionaste instalación SIN cifrado. Fortress no convertirá root/home a LUKS después."
-        read_input_text "Confirmar instalación SIN cifrado"
+        print_danger "NO encryption selected. Fortress cannot convert root/home to LUKS later."
+        read_input_text "Confirm install WITHOUT encryption"
         [[ $OPTION != y ]] && continue
-        create_partition || { print_warning "Particionado cancelado."; return 1; }
+        create_partition || return 1
         ;;
       "LVM (NO encryption)")
-        print_danger "Seleccionaste LVM SIN cifrado. Fortress no convertirá root/home a LUKS después."
-        read_input_text "Confirmar instalación SIN cifrado"
+        print_danger "LVM NO encryption selected. Fortress cannot convert root/home to LUKS later."
+        read_input_text "Confirm install WITHOUT encryption"
         [[ $OPTION != y ]] && continue
-        create_partition || { print_warning "Particionado cancelado."; return 1; }
-        setup_lvm        || { print_warning "Setup LVM falló."; return 1; }
+        create_partition && setup_lvm || return 1
         ;;
       "Maintain Current")
-        print_warning "Maintain Current asume que ya montaste/abriste cualquier LUKS existente manualmente."
+        print_warning "Assumes you opened/mounted any existing LUKS manually."
         modprobe dm-mod
         vgscan &>/dev/null
         vgchange -ay &>/dev/null
         ;;
-      "Volver al menú principal")
-        print_info "Volviendo al menú principal sin tocar el disco."
-        return 1
-        ;;
+      "Back") return 1 ;;
       *)
         invalid_option
         continue
@@ -186,21 +159,14 @@ create_partition_scheme() {
 #SETUP PARTITION{{{
 create_partition() {
   umount_partitions
-  apps_list=("cfdisk (recomendado, TUI simple)" "cgdisk" "fdisk" "gdisk" "parted" "Volver")
+  apps_list=("cfdisk" "cgdisk" "fdisk" "gdisk" "parted" "Back")
   PS3="$prompt1"
-  echo -e "Select partition program (o 'Volver' para cancelar):"
+  echo -e "Select partition program (or 'Back' to cancel):"
   select OPT in "${apps_list[@]}"; do
     case "$OPT" in
-      "Volver")
-        print_info "Particionado cancelado."
-        return 1
-        ;;
-      "cfdisk"*)  prog="cfdisk" ;;
-      cgdisk|fdisk|gdisk|parted) prog="$OPT" ;;
-      *)
-        invalid_option
-        continue
-        ;;
+      "Back") return 1 ;;
+      cfdisk|cgdisk|fdisk|gdisk|parted) prog="$OPT" ;;
+      *) invalid_option; continue ;;
     esac
     select_device || return 1
     if [[ "$prog" == "parted" ]]; then
@@ -215,20 +181,21 @@ create_partition() {
 #SETUP LUKS {{{
 setup_luks() {
   print_title "LUKS - https://wiki.archlinux.org/index.php/LUKS"
-  print_info "The Linux Unified Key Setup or LUKS is a disk-encryption specification created by Clemens Fruhwirth and originally intended for Linux."
   print_danger "\tDo not use this for boot partitions"
-  # lsblk -lnpo NAME,TYPE: una línea por dispositivo con path absoluto y type;
-  # filtramos TYPE=="part" (excluye disk, lvm, crypt, etc.) → sólo particiones físicas.
   mapfile -t block_list < <(lsblk -lnpo NAME,TYPE | awk '$2=="part"{print $1}')
-
-  # GUARD: si no hay particiones físicas, no hay nada que cifrar. Causa típica:
-  # el usuario abrió cfdisk pero salió sin "Write" (no se persistió la tabla GPT),
-  # o el disco aún no tiene tabla de particiones. Sin este guard, el menú sólo
-  # muestra "Cancel" y un click descuidado disparaba luksFormat sobre "Cancel".
+  local luks_candidates=()
+  local part
+  for part in "${block_list[@]}"; do
+    if is_efi_system_partition "$part"; then
+      print_info "Skipping EFI System Partition for LUKS: $part"
+      continue
+    fi
+    luks_candidates+=("$part")
+  done
+  block_list=("${luks_candidates[@]}")
   if [[ ${#block_list[@]} -eq 0 ]]; then
-    print_danger "No se detectaron particiones físicas en el sistema."
-    print_warning "Probablemente cfdisk se cerró sin escribir la tabla, o el disco no tiene GPT."
-    print_warning "Vuelve al paso de particionado, crea las particiones (ESP + root) y haz 'Write'."
+    print_error "No non-ESP physical partitions detected for LUKS."
+    print_warning "Back to partitioning: create an ESP plus a separate root/LUKS partition, then 'Write'."
     pause_function
     return 1
   fi
@@ -237,37 +204,28 @@ setup_luks() {
   PS3="$prompt1"
   echo -e "Select partition:"
   select OPT in "${block_list[@]}"; do
-    # IMPORTANT: chequear Cancel ANTES de contains_element. Si no, "Cancel" pasa
-    # como elemento válido del array y dispara luksFormat con OPT="Cancel" → boom.
+    # IMPORTANT: check Cancel BEFORE contains_element (Cancel is in the array).
     if [[ "$OPT" == "Cancel" ]]; then
-      print_warning "LUKS cancelado; vuelve a elegir particionado o confirma un modo sin cifrado explícito."
       return 1
     elif contains_element "$OPT" "${block_list[@]}"; then
-      print_danger "Esto destruirá irreversiblemente los datos y firmas existentes en ${OPT}."
-      printf "%s" "Escribe CIFRAR para confirmar LUKS2 en ${OPT}: "
+      print_danger "This will irreversibly destroy data and signatures on ${OPT}."
+      printf "%s" "Type ENCRYPT to confirm LUKS2 on ${OPT}: "
       read -r luks_confirm
-      [[ "$luks_confirm" == "CIFRAR" ]] || {
-        print_warning "LUKS cancelado; no se continúa sin cifrado."
-        return 1
-      }
-      wipefs -a "$OPT" || { print_error "wipefs falló en ${OPT}; LUKS abortado."; return 1; }
-      # cryptsetup flags 2026:
-      #   --use-urandom            evita bloqueo en live ISO sin RNG hardware (urandom es eq. cripto)
-      #   --pbkdf argon2id         explícito (default desde cryptsetup 2.4 pero no asumir)
-      #   --pbkdf-memory 524288    tope 512MiB → evita OOM al unlock en sistemas low-RAM
-      #   --pbkdf-parallel 4       paraleliza derivación; reduce iter-time real sin perder coste
+      [[ "$luks_confirm" == "ENCRYPT" ]] || { print_warning "LUKS cancelled."; return 1; }
+      wipefs -a "$OPT" || { print_error "wipefs failed on ${OPT}."; return 1; }
+      # cryptsetup 2026: argon2id capped at 512MiB to avoid OOM on low-RAM unlock;
+      # urandom (not random) to avoid live-ISO entropy hang.
       cryptsetup --batch-mode --type luks2 \
         --cipher aes-xts-plain64 --key-size 512 --hash sha512 \
         --pbkdf argon2id --pbkdf-memory 524288 --pbkdf-parallel 4 --iter-time 5000 \
         --use-urandom --verify-passphrase \
         luksFormat "$OPT" \
-        || { print_error "luksFormat falló. ${OPT} puede tener header parcial; verifica con 'cryptsetup luksDump ${OPT}'."; return 1; }
+        || { print_error "luksFormat failed. ${OPT} may have partial header."; return 1; }
       local open_args=(open --type luks)
       [[ $TRIM -eq 1 ]] && open_args+=(--allow-discards)
-      # Nombre canónico 'cryptroot' usado consistentemente en setup_lvm, fstab generado,
-      # y rd.luks.name= del cmdline. NO usar 'crypt' (legacy, rompía LUKS-sin-LVM).
+      # Canonical mapper name 'cryptroot' — used consistently across setup_lvm, fstab, cmdline.
       cryptsetup "${open_args[@]}" "$OPT" cryptroot \
-        || { print_error "No se pudo abrir el contenedor LUKS recién creado."; return 1; }
+        || { print_error "Could not open LUKS container."; return 1; }
       LUKS=1
       LUKS_DISK=$(echo "${OPT}" | sed 's/\/dev\///')
       break
@@ -280,79 +238,76 @@ setup_luks() {
 #SETUP LVM {{{
 setup_lvm() {
   print_title "LVM - https://wiki.archlinux.org/index.php/LVM"
-  print_info "LVM is a logical volume manager for the Linux kernel; it manages disk drives and similar mass-storage devices."
-  print_info "Layout default: single root LV ocupando el 100% del VG. /home queda como subdir de / (o subvol @home en btrfs)."
+  print_info "Default layout: single root LV using 100% of VG. /home stays as subdir of / (or @home subvol on btrfs)."
   if [[ $LUKS -eq 1 ]]; then
-    pvcreate /dev/mapper/cryptroot || { print_error "pvcreate falló sobre /dev/mapper/cryptroot"; return 1; }
-    vgcreate lvm /dev/mapper/cryptroot || { print_error "vgcreate lvm falló"; return 1; }
+    pvcreate /dev/mapper/cryptroot || { print_error "pvcreate on /dev/mapper/cryptroot failed."; return 1; }
+    vgcreate lvm /dev/mapper/cryptroot || { print_error "vgcreate lvm failed."; return 1; }
   else
     mapfile -t block_list < <(lsblk -lnpo NAME,TYPE | awk '$2=="part"{print $1}')
+    local pv_candidates=()
+    local part
+    for part in "${block_list[@]}"; do
+      if is_efi_system_partition "$part"; then
+        print_info "Skipping EFI System Partition for LVM PV: $part"
+        continue
+      fi
+      pv_candidates+=("$part")
+    done
+    block_list=("${pv_candidates[@]}")
     if [[ ${#block_list[@]} -eq 0 ]]; then
-      print_error "No se detectaron particiones físicas. Vuelve al paso de particionado (cfdisk → 'Write')."
+      print_error "No non-ESP physical partitions detected for LVM PV."
       return 1
     fi
-    block_list+=("Volver")
+    block_list+=("Back")
     PS3="$prompt1"
-    echo -e "Select partition para LVM PV (o 'Volver'):"
+    echo -e "Select partition for LVM PV (or 'Back'):"
     select OPT in "${block_list[@]}"; do
-      if [[ "$OPT" == "Volver" ]]; then
-        print_info "LVM cancelado."
+      if [[ "$OPT" == "Back" ]]; then
         return 1
       elif contains_element "$OPT" "${block_list[@]}"; then
-        pvcreate "$OPT" || { print_error "pvcreate falló sobre $OPT"; return 1; }
-        vgcreate lvm "$OPT" || { print_error "vgcreate lvm falló"; return 1; }
+        pvcreate "$OPT" || { print_error "pvcreate on $OPT failed."; return 1; }
+        vgcreate lvm "$OPT" || { print_error "vgcreate lvm failed."; return 1; }
         break
       else
         invalid_option
       fi
     done
   fi
-  local lvm_modes=("Guided root (recommended)" "Manual" "Volver")
+
+  local lvm_modes=("Guided root (recommended)" "Manual" "Back")
   PS3="$prompt1"
-  print_info "Guiado: un solo LV 'root' = 100% del VG. En el siguiente paso elige /dev/mapper/lvm-root como /."
-  echo -e "Select LVM layout (o 'Volver'):\n"
+  echo -e "Select LVM layout (or 'Back'):\n"
   select LVM_MODE in "${lvm_modes[@]}"; do
     case "$LVM_MODE" in
       "Guided root (recommended)")
-        # Single-root layout: root LV ocupa el 100% del VG.
-        print_info "Layout: root LV ocupa el 100% del VG (sin LV-home separado)."
-        print_info "/home será un subdirectorio de / (o subvol @home si usas btrfs)."
         lvcreate -l 100%FREE lvm -n root \
-          || { print_error "lvcreate root falló sobre el VG 'lvm'."; return 1; }
+          || { print_error "lvcreate root on VG 'lvm' failed."; return 1; }
         LVM=1
         return 0
         ;;
-      "Volver")
-        print_info "LVM mode cancelado. El VG 'lvm' quedó creado vacío; puedes hacerlo Manual la próxima vez."
-        return 1
-        ;;
-      "Manual")
-        break
-        ;;
-      *)
-        invalid_option
-        ;;
+      "Back") return 1 ;;
+      "Manual") break ;;
+      *) invalid_option ;;
     esac
   done
 
-  print_warning "Manual: el último LV toma 100% del espacio restante. Crea primero un LV llamado root."
-  printf "%s" "Enter number of LVs [ex: 2 for root+home]: "
+  print_warning "Manual: last LV takes 100% free. First LV must be named 'root'."
+  printf "%s" "Number of LVs [ex: 2 for root+home]: "
   read -r number_partitions
   i=1
   while [[ $i -le $number_partitions ]]; do
-    printf "%s" "Enter $iª LV name [required first LV: root; ex: root, home, data]: "
+    printf "%s" "Enter $iª LV name (first must be 'root'; e.g. root, home, data): "
     read -r partition_name
     if [[ $i -eq 1 && "$partition_name" != "root" ]]; then
-      print_error "El primer LV debe llamarse 'root'. Reinicia el setup LVM Manual."
+      print_error "First LV must be named 'root'."
       return 1
     fi
     if [[ $i -eq $number_partitions ]]; then
       lvcreate -l 100%FREE lvm -n "${partition_name}"
     else
-      # Mínimo razonable según el rol del LV
       local lv_min=1
       [[ "$partition_name" == "root" ]] && lv_min=30
-      read_size "Tamaño del ${i}º LV (${partition_name})" "30G" "$lv_min" partition_size
+      read_size "Size of ${i}º LV (${partition_name})" "30G" "$lv_min" partition_size
       lvcreate -L "${partition_size}" lvm -n "${partition_name}"
     fi
     i=$((i + 1))
@@ -363,28 +318,22 @@ setup_lvm() {
 #SELECT|FORMAT PARTITIONS {{{
 format_partitions() {
   print_title "https://wiki.archlinux.org/index.php/File_Systems"
-  print_info "This step will select and format the selected partition where archlinux will be installed"
-  print_danger "\tAll data on the ROOT and SWAP partition will be LOST."
-  [[ $LVM -eq 1 ]] && print_info "Modo LVM detectado: root/home se eligen desde /dev/mapper/lvm-*. Las particiones físicas sólo se muestran cuando corresponden, como la ESP para /boot."
+  print_danger "\tAll data on the ROOT partition will be LOST."
+  [[ $LVM -eq 1 ]] && print_info "LVM mode: root/home picked from /dev/mapper/lvm-*. Physical parts only shown where relevant (ESP)."
   i=0
 
-  # lsblk -lnpo NAME,TYPE: una línea por device, paths absolutos, sin tree-prefix.
-  # Particiones físicas TYPE=part → /dev/sda1, /dev/nvme0n1p1, ...
-  # LVs TYPE=lvm → /dev/mapper/lvm-root, /dev/mapper/lvm-home, ...
-  # Excluimos disk, crypt, etc. para evitar formatear backing devices.
+  # TYPE=part → /dev/sda1; TYPE=lvm → /dev/mapper/lvm-root. Excludes disk/crypt backing.
   mapfile -t partitions_list < <(lsblk -lnpo NAME,TYPE | awk '$2=="part" || $2=="lvm" {print $1}')
 
   if [[ ${#partitions_list[@]} -eq 0 ]]; then
-    print_error "No se detectaron particiones ni LVs. Vuelve al paso de particionado."
+    print_error "No partitions or LVs detected. Back to partitioning."
     return 1
   fi
 
   role_partitions=()
 
-  # partitions based on boot system
-  # NOTA: swap eliminado a propósito. ZRAM cubre 100% del caso en 2026 (cfg en
-  # configure_zen_tuning + zram-generator). Hibernación a disco no es soportada
-  # por este instalador; quien la necesite la añade post-install manualmente.
+  # NOTE: swap removed on purpose. ZRAM covers it (see configure_zen_tuning).
+  # Hibernation-to-disk not supported by this installer; add post-install if needed.
   if [[ $UEFI -eq 1 ]]; then
     partition_name=("root" "EFI" "another")
   else
@@ -392,14 +341,14 @@ format_partitions() {
   fi
 
   select_filesystem() {
-    # 2 opciones tier-1 + Volver. Devolver "" en filesystem señala cancel al caller.
-    filesystems_list=("btrfs" "ext4" "Volver")
+    # btrfs/ext4 only. Other FSes (xfs/zfs/bcachefs) excluded as too niche or unstable for an installer.
+    filesystems_list=("btrfs" "ext4" "Back")
     PS3="$prompt1"
-    print_info "btrfs (recomendado): snapshots, compresión zstd, subvols @/@home/@var_log/@snapshots → rollback con snapper."
-    print_info "ext4: estándar conservador, máxima compatibilidad, recovery con e2fsck. Sin snapshots ni compresión."
-    echo -e "Select filesystem (o 'Volver'):\n"
+    print_info "btrfs (recommended): snapshots, zstd compress, subvols @/@home/@var_log/@snapshots."
+    print_info "ext4: conservative, max compatibility. No snapshots/compression."
+    echo -e "Select filesystem (or 'Back'):\n"
     select filesystem in "${filesystems_list[@]}"; do
-      if [[ "$filesystem" == "Volver" ]]; then
+      if [[ "$filesystem" == "Back" ]]; then
         filesystem=""
         return 1
       elif contains_element "${filesystem}" "${filesystems_list[@]}"; then
@@ -426,6 +375,10 @@ format_partitions() {
     [[ "$1" != /dev/mapper/* ]] && ! is_luks_backing_partition "$1" && ! has_lsblk_children "$1"
   }
 
+  is_installable_root_partition() {
+    ! is_luks_backing_partition "$1" && ! is_efi_system_partition "$1"
+  }
+
   build_partition_candidates() {
     local role="$1"
     local partition_candidate
@@ -435,7 +388,7 @@ format_partitions() {
         root)
           if [[ $LVM -eq 1 ]]; then
             [[ "$partition_candidate" == "/dev/mapper/lvm-root" ]] && role_partitions+=("$partition_candidate")
-          elif ! is_luks_backing_partition "$partition_candidate"; then
+          elif is_installable_root_partition "$partition_candidate"; then
             role_partitions+=("$partition_candidate")
           fi
           ;;
@@ -447,7 +400,7 @@ format_partitions() {
             is_lvm_lv "$partition_candidate" &&
               [[ "$partition_candidate" != "/dev/mapper/lvm-root" ]] &&
               role_partitions+=("$partition_candidate")
-          elif ! is_luks_backing_partition "$partition_candidate"; then
+          elif is_installable_root_partition "$partition_candidate"; then
             role_partitions+=("$partition_candidate")
           fi
           ;;
@@ -458,13 +411,13 @@ format_partitions() {
   print_partition_hint() {
     case "$1" in
       root)
-        [[ $LVM -eq 1 ]] && print_info "Root (/): elige /dev/mapper/lvm-root, el LV creado para el sistema base."
+        [[ $LVM -eq 1 ]] && print_info "Root (/): pick /dev/mapper/lvm-root."
         ;;
       EFI)
-        print_info "EFI: elige la ESP sin cifrar (normalmente la partición pequeña FAT32). AUI-X la montará en /boot para systemd-boot."
+        print_info "EFI: pick the unencrypted ESP (small FAT32). Will mount at /boot for systemd-boot."
         ;;
       another)
-        [[ $LVM -eq 1 ]] && print_info "Extra: elige /dev/mapper/lvm-home para montarlo como /home."
+        [[ $LVM -eq 1 ]] && print_info "Extra: pick /dev/mapper/lvm-home to mount as /home."
         ;;
     esac
   }
@@ -477,92 +430,97 @@ format_partitions() {
       [[ "$current_partition" != "$selected_partition" ]] && remaining_partitions+=("$current_partition")
     done
     partitions_list=("${remaining_partitions[@]}")
-    #increase i
-    [[ ${partition_name[i]} != another ]] && i=$((i + 1))
+      [[ ${partition_name[i]} != another ]] && i=$((i + 1))
   }
 
-  # Btrfs subvolume layout para root: @, @home, @var_log, @snapshots.
-  # Habilita rollback con snapper/grub-btrfs y aisla /var/log de snapshots de raíz.
-  # Opciones de mount: compress=zstd (transparente, gana ~30-50% espacio en logs/configs),
-  #                    noatime (menos writes), space_cache=v2 (más rápido).
-  # discard=async sólo si TRIM=1 (NVMe/SSD); async no penaliza latencia.
+  # Btrfs subvol layout for root: @ (/), @home, @var_log, @snapshots.
+  # Enables snapper rollback and isolates /var/log from root snapshots.
+  # mount opts: compress=zstd transparent (~30-50% savings on logs/configs).
   _btrfs_setup_root() {
     local dev="$1" mnt="$2"
     local mount_opts="noatime,compress=zstd,space_cache=v2"
     [[ $TRIM -eq 1 ]] && mount_opts+=",discard=async"
 
-    print_info "Btrfs detectado para /: creando layout de subvolúmenes (@, @home, @var_log, @snapshots)."
-
-    # Mount temporal en raíz del FS para crear subvols
-    mount -t btrfs "$dev" "$mnt" || { print_error "mount inicial btrfs falló sobre $dev"; return 1; }
-    btrfs subvolume create "$mnt/@"          || { print_error "btrfs subvol @ falló";          umount "$mnt"; return 1; }
-    btrfs subvolume create "$mnt/@home"      || { print_error "btrfs subvol @home falló";      umount "$mnt"; return 1; }
-    btrfs subvolume create "$mnt/@var_log"   || { print_error "btrfs subvol @var_log falló";   umount "$mnt"; return 1; }
-    btrfs subvolume create "$mnt/@snapshots" || { print_error "btrfs subvol @snapshots falló"; umount "$mnt"; return 1; }
+    print_info "Btrfs root: creating subvols @, @home, @var_log, @snapshots."
+    mount -t btrfs "$dev" "$mnt" || { print_error "Initial btrfs mount on $dev failed."; return 1; }
+    btrfs subvolume create "$mnt/@"          || { print_error "subvol @ failed.";          umount "$mnt"; return 1; }
+    btrfs subvolume create "$mnt/@home"      || { print_error "subvol @home failed.";      umount "$mnt"; return 1; }
+    btrfs subvolume create "$mnt/@var_log"   || { print_error "subvol @var_log failed.";   umount "$mnt"; return 1; }
+    btrfs subvolume create "$mnt/@snapshots" || { print_error "subvol @snapshots failed."; umount "$mnt"; return 1; }
     umount "$mnt"
 
-    # Remount con subvol=@ + opciones tuneadas
     mount -t btrfs -o "subvol=@,${mount_opts}" "$dev" "$mnt" \
-      || { print_error "remount btrfs subvol=@ falló"; return 1; }
-
-    # Crear paths y montar subvols hijos
+      || { print_error "Remount subvol=@ failed."; return 1; }
     mkdir -p "$mnt/home" "$mnt/var/log" "$mnt/.snapshots"
-    mount -t btrfs -o "subvol=@home,${mount_opts}"      "$dev" "$mnt/home"
-    mount -t btrfs -o "subvol=@var_log,${mount_opts}"   "$dev" "$mnt/var/log"
-    mount -t btrfs -o "subvol=@snapshots,${mount_opts}" "$dev" "$mnt/.snapshots"
+    mount -t btrfs -o "subvol=@home,${mount_opts}" "$dev" "$mnt/home" ||
+      { print_error "Mount subvol=@home failed."; umount -R "$mnt" 2>/dev/null || true; return 1; }
+    mount -t btrfs -o "subvol=@var_log,${mount_opts}" "$dev" "$mnt/var/log" ||
+      { print_error "Mount subvol=@var_log failed."; umount -R "$mnt" 2>/dev/null || true; return 1; }
+    mount -t btrfs -o "subvol=@snapshots,${mount_opts}" "$dev" "$mnt/.snapshots" ||
+      { print_error "Mount subvol=@snapshots failed."; umount -R "$mnt" 2>/dev/null || true; return 1; }
 
-    print_success "Btrfs subvols listos: @=/  @home=/home  @var_log=/var/log  @snapshots=/.snapshots"
+    print_success "Btrfs subvols mounted: @=/  @home=/home  @var_log=/var/log  @snapshots=/.snapshots"
   }
 
   format_partition() {
+    local dev="$1"
+    local target="$2"
+    local requested_fs="${3:-}"
+    local selected_fs
     read_input_text "Confirm format $1 partition"
     if [[ $OPTION == y ]]; then
-      [[ -z $3 ]] && select_filesystem || filesystem=$3
-      # Flags por FS:
-      #   -f          → btrfs requiere -f para sobreescribir signature existente
-      #   -F32        → vfat (sólo ESP, auto-pasado por format_partition call con vfat)
-      #   -E discard  → ext4 con TRIM, marca bloques liberados como discardable al mkfs
-      mkfs."${filesystem}" "$1" \
+      if [[ -n "$requested_fs" ]]; then
+        selected_fs="$requested_fs"
+      else
+        select_filesystem || return 1
+        selected_fs="$filesystem"
+      fi
+      filesystem="$selected_fs"
+      mkfs."${filesystem}" "$dev" \
         $([[ ${filesystem} == btrfs ]] && echo "-f") \
         $([[ ${filesystem} == vfat ]] && echo "-F32") \
-        $([[ $TRIM -eq 1 && ${filesystem} == ext4 ]] && echo "-E discard")
-      fsck "$1"
-      mkdir -p "$2"
-      # Btrfs como root → layout de subvolúmenes; otros FS o mountpoints → mount plano
-      if [[ "${filesystem}" == "btrfs" && "$2" == "${MOUNTPOINT}" ]]; then
-        _btrfs_setup_root "$1" "$2"
+        $([[ $TRIM -eq 1 && ${filesystem} == ext4 ]] && echo "-E discard") ||
+        { print_error "mkfs.${filesystem} failed on ${dev}."; return 1; }
+      [[ "${filesystem}" != "btrfs" ]] && fsck "$dev" || true
+      mkdir -p "$target" || { print_error "Could not create mountpoint ${target}."; return 1; }
+      if [[ "${filesystem}" == "btrfs" && "$target" == "${MOUNTPOINT}" ]]; then
+        _btrfs_setup_root "$dev" "$target" || return 1
       else
-        mount -t "${filesystem}" "$1" "$2"
+        mount -t "${filesystem}" "$dev" "$target" ||
+          { print_error "Mount ${dev} on ${target} failed."; return 1; }
       fi
-      disable_partition "$1"
+      disable_partition "$dev"
+      return 0
     fi
+    print_warning "Format cancelled for ${dev}."
+    return 1
   }
 
   check_mountpoint() {
-    if mount | grep "$2"; then
+    if findmnt -rn --mountpoint "$2" >/dev/null 2>&1; then
       echo "Successfully mounted"
       disable_partition "$1"
+      return 0
     else
       echo "WARNING: Not Successfully mounted"
+      return 1
     fi
   }
 
   set_efi_partition() {
     EFI_MOUNTPOINT="/boot"
-    print_info "UEFI estándar: ESP montada en /boot para systemd-boot."
+    print_info "UEFI: ESP mounted at /boot for systemd-boot."
   }
 
-  # NOTA: swap eliminado del flujo. ZRAM cubre el caso (cfg en configure_zen_tuning).
-  # Hibernación a disco no soportada por este instalador; añadirla post-install.
   while true; do
     PS3="$prompt1"
     build_partition_candidates "${partition_name[i]}"
     if [[ ${#role_partitions[@]} -eq 0 ]]; then
       if [[ ${partition_name[i]} == another ]]; then
-        print_info "No quedan particiones/LVs seguros para montar como extra."
+        print_info "No remaining safe partitions/LVs to mount as extra."
         break
       fi
-      print_error "No hay candidatos seguros para '${partition_name[i]}'. Revisa el particionado/LVM."
+      print_error "No safe candidates for '${partition_name[i]}'. Check partitioning/LVM."
       return 1
     fi
     print_partition_hint "${partition_name[i]}"
@@ -573,38 +531,43 @@ format_partitions() {
         root)
           ROOT_PART=$(echo "${partition}" | sed 's/\/dev\/mapper\///' | sed 's/\/dev\///')
           ROOT_MOUNTPOINT=${partition}
-          format_partition "${partition}" "${MOUNTPOINT}"
+          format_partition "${partition}" "${MOUNTPOINT}" || continue
           ;;
         EFI)
           set_efi_partition
           read_input_text "Format ${partition} partition"
           if [[ $OPTION == y ]]; then
-            format_partition "${partition}" "${MOUNTPOINT}${EFI_MOUNTPOINT}" vfat
+            format_partition "${partition}" "${MOUNTPOINT}${EFI_MOUNTPOINT}" vfat || continue
           else
             mkdir -p "${MOUNTPOINT}${EFI_MOUNTPOINT}"
-            mount -t vfat "${partition}" "${MOUNTPOINT}${EFI_MOUNTPOINT}"
-            check_mountpoint "${partition}" "${MOUNTPOINT}${EFI_MOUNTPOINT}"
+            mount -t vfat "${partition}" "${MOUNTPOINT}${EFI_MOUNTPOINT}" ||
+              { print_error "Mount ${partition} on ${MOUNTPOINT}${EFI_MOUNTPOINT} failed."; continue; }
+            check_mountpoint "${partition}" "${MOUNTPOINT}${EFI_MOUNTPOINT}" || continue
           fi
           ;;
         another)
           if [[ "$partition" == "/dev/mapper/lvm-home" ]]; then
             printf "%s" "Mountpoint [default: /home]: "
           else
-            printf "%s" "Mountpoint [ex: /home]: "
+            printf "%s" "Mountpoint [e.g. /home]: "
           fi
           read -r directory
           [[ -z "$directory" && "$partition" == "/dev/mapper/lvm-home" ]] && directory="/home"
-          [[ $directory == "/boot" ]] && BOOT_MOUNTPOINT=$(echo "${partition}" | sed 's/[0-9]//')
-          select_filesystem
+          if [[ ! "$directory" =~ ^/[^[:space:]]*$ || "$directory" == "/" || "$directory" == "$EFI_MOUNTPOINT" ]]; then
+            print_warning "Invalid mountpoint '${directory}'. Use an absolute path like /home or /data."
+            continue
+          fi
+          select_filesystem || continue
           read_input_text "Format ${partition} partition"
           if [[ $OPTION == y ]]; then
-            format_partition "${partition}" "${MOUNTPOINT}${directory}" "${filesystem}"
+            format_partition "${partition}" "${MOUNTPOINT}${directory}" "${filesystem}" || continue
           else
             read_input_text "Confirm fs=""${filesystem}"" part=""${partition}"" dir=""${directory}"""
             if [[ $OPTION == y ]]; then
               mkdir -p "${MOUNTPOINT}${directory}"
-              mount -t "${filesystem}" "${partition}" "${MOUNTPOINT}""${directory}"
-              check_mountpoint "${partition}" "${MOUNTPOINT}${directory}"
+              mount -t "${filesystem}" "${partition}" "${MOUNTPOINT}""${directory}" ||
+                { print_error "Mount ${partition} on ${MOUNTPOINT}${directory} failed."; continue; }
+              check_mountpoint "${partition}" "${MOUNTPOINT}${directory}" || continue
             fi
           fi
           ;;
@@ -614,7 +577,6 @@ format_partitions() {
         invalid_option
       fi
     done
-    # ¿quedan particiones libres y más roles que procesar?
     if [[ ${#partitions_list[@]} -eq 0 ]]; then
       break
     elif [[ ${partition_name[i]} == another ]]; then
@@ -626,11 +588,10 @@ format_partitions() {
 }
 #}}}
 #ZEN PERFORMANCE/SECURITY BASELINE {{{
-# Escribe configs declarativas en el sistema instalado. Idempotente (sobrescribe).
-# Objetivo: aprovechar linux-zen (BBR3, EEVDF/BORE, PREEMPT_DYNAMIC, PSI) sin
-# comprometer la postura por defecto del kernel en mitigaciones de CPU.
+# Idempotent declarative configs. Leverages linux-zen (BBR3, BORE, PSI) without
+# weakening kernel CPU-mitigation defaults.
 configure_zen_tuning() {
-  print_info "Aplicando baseline de tuning para linux-zen (sysctl, udev, modprobe, zram)."
+  print_info "Applying linux-zen baseline (sysctl, udev, modprobe, zram, nftables)."
 
   mkdir -p "${MOUNTPOINT}/etc/sysctl.d" \
            "${MOUNTPOINT}/etc/udev/rules.d" \
@@ -638,7 +599,7 @@ configure_zen_tuning() {
            "${MOUNTPOINT}/etc/systemd" \
            "${MOUNTPOINT}/etc/systemd/resolved.conf.d"
 
-  # Red: BBR (zen trae BBR3) + fair queueing + hardening baseline + IPv6 privacy
+  # Net: BBR + fq + hardening + IPv6 privacy (RFC4941).
   cat > "${MOUNTPOINT}/etc/sysctl.d/99-zen-net.conf" <<'EOF'
 # --- Performance ---
 net.core.default_qdisc = fq
@@ -648,7 +609,7 @@ net.ipv4.tcp_mtu_probing = 1
 net.core.netdev_max_backlog = 16384
 net.core.somaxconn = 8192
 
-# --- IPv4 hardening (postura senior responsable) ---
+# --- IPv4 hardening ---
 net.ipv4.tcp_rfc1337 = 1
 net.ipv4.tcp_syncookies = 1
 net.ipv4.conf.all.rp_filter = 1
@@ -660,9 +621,7 @@ net.ipv4.conf.all.accept_source_route = 0
 net.ipv4.conf.default.accept_source_route = 0
 net.ipv4.conf.all.log_martians = 1
 
-# --- IPv6 privacy (RFC4941) + hardening ---
-# use_tempaddr=2: prefiere direcciones temporales (rotan) sobre EUI-64 (basada en MAC).
-# Crítico para laptops en redes públicas (café/aeropuerto/conferencia).
+# --- IPv6 privacy + hardening (use_tempaddr=2 = RFC4941 temp addresses) ---
 net.ipv6.conf.all.use_tempaddr = 2
 net.ipv6.conf.default.use_tempaddr = 2
 net.ipv6.conf.all.accept_redirects = 0
@@ -671,10 +630,7 @@ net.ipv6.conf.all.accept_source_route = 0
 net.ipv6.conf.default.accept_source_route = 0
 EOF
 
-  # VM/FS: tuning zram-only (sin swap en disco como caso default).
-  # swappiness=180: con zram, "swap" es comprimir en RAM → es barato, hazlo agresivo.
-  # page-cluster=0: lectura single-page; random-access a zram es rápido, no agrupar.
-  # Valores alineados con defaults de Fedora Workstation (probados en producción).
+  # VM/FS: zram-only tuning. swappiness=180 + page-cluster=0 are Fedora defaults for zram.
   cat > "${MOUNTPOINT}/etc/sysctl.d/99-zen-vm.conf" <<'EOF'
 vm.swappiness = 180
 vm.page-cluster = 0
@@ -688,28 +644,21 @@ fs.inotify.max_user_instances = 8192
 kernel.split_lock_mitigate = 0
 EOF
 
-  # I/O schedulers por tipo de dispositivo (multi-queue aware)
+  # I/O schedulers per device class (multi-queue aware).
   cat > "${MOUNTPOINT}/etc/udev/rules.d/60-ioschedulers.rules" <<'EOF'
-# NVMe: dejar al hardware (multi-queue nativo)
 ACTION=="add|change", KERNEL=="nvme[0-9]n[0-9]", ATTR{queue/scheduler}="none"
-# SSD SATA / MMC: deadline multi-queue
 ACTION=="add|change", KERNEL=="sd[a-z]|mmcblk[0-9]*", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="mq-deadline"
-# HDD rotacional: BFQ (fairness por proceso)
 ACTION=="add|change", KERNEL=="sd[a-z]", ATTR{queue/rotational}=="1", ATTR{queue/scheduler}="bfq"
 EOF
 
-  # Module tweaks: silenciar PC speaker, audio sin pops.
-  # Nota: nvme_core suspend latency NO va aquí (módulo built-in en kernels Arch);
-  #       vive en el cmdline del bootloader como nvme_core.default_ps_max_latency_us=5500.
+  # Module tweaks. Note: nvme_core latency lives in cmdline (built-in module, modprobe.d ignored).
   cat > "${MOUNTPOINT}/etc/modprobe.d/zen-tuning.conf" <<'EOF'
 blacklist pcspkr
 blacklist snd_pcsp
 options snd_hda_intel power_save=1 power_save_controller=Y
 EOF
 
-  # ZRAM swap (zstd, mitad de RAM con tope 8G): preferible a swapfile/swap-LV
-  # para no exponer claves de sesión a disco. Coexiste con swap físico si el
-  # usuario lo configuró (zram con prio 100 se usa primero).
+  # ZRAM swap (zstd, ½ RAM capped at 8G). Avoids writing memory contents to disk.
   cat > "${MOUNTPOINT}/etc/systemd/zram-generator.conf" <<'EOF'
 [zram0]
 zram-size = min(ram / 2, 8192)
@@ -718,7 +667,7 @@ swap-priority = 100
 fs-type = swap
 EOF
 
-  # systemd-resolved: DNSSEC y DoT oportunista, resolvers públicos como fallback
+  # systemd-resolved: DNSSEC + opportunistic DoT + public fallback resolvers.
   cat > "${MOUNTPOINT}/etc/systemd/resolved.conf.d/10-aui-x.conf" <<'EOF'
 [Resolve]
 DNSSEC=allow-downgrade
@@ -727,11 +676,8 @@ Cache=yes
 FallbackDNS=1.1.1.1 9.9.9.9 2606:4700:4700::1111 2620:fe::fe
 EOF
 
-  # nftables: default-drop input, allow loopback + established/related + ICMP esenciales.
-  # Estanco para desktop/laptop: cualquier servicio que se levante post-install
-  # (CUPS, mDNS, KDE Connect, etc.) queda contenido salvo que se abra explícitamente.
-  # Para abrir un puerto: editar /etc/nftables.conf, añadir regla en chain input,
-  # luego: systemctl reload nftables
+  # nftables baseline: default-drop input, allow loopback/established/ICMP/DHCPv6.
+  # Open ports by editing /etc/nftables.conf then: systemctl reload nftables
   cat > "${MOUNTPOINT}/etc/nftables.conf" <<'EOF'
 #!/usr/bin/nft -f
 # aui-x baseline firewall: default-drop input, allow output.
@@ -748,11 +694,11 @@ table inet filter {
         iif != lo ip daddr 127.0.0.0/8 drop
         iif != lo ip6 daddr ::1 drop
 
-        # estado de conexión: aceptar respuestas a tráfico saliente
+        # conntrack: accept replies to outbound traffic
         ct state established,related accept
         ct state invalid drop
 
-        # ICMP esencial (necesario para PMTUD y diagnóstico de red)
+        # Essential ICMP (PMTUD and basic diagnostics)
         ip protocol icmp icmp type { echo-request, destination-unreachable, time-exceeded, parameter-problem } accept
         ip6 nexthdr icmpv6 icmpv6 type {
             destination-unreachable, packet-too-big, time-exceeded, parameter-problem,
@@ -760,7 +706,7 @@ table inet filter {
             mld-listener-query, mld-listener-report, mld-listener-reduction
         } accept
 
-        # DHCPv6 client (necesario para IPv6 vía DHCP)
+        # DHCPv6 client (needed for IPv6 over DHCP)
         udp dport 546 ct state new accept
 
         # SSH: COMENTADO por defecto. Descomenta si necesitas SSH inbound:
@@ -785,30 +731,26 @@ EOF
 }
 #}}}
 #INSTALL BASE SYSTEM {{{
-# AUI-X pin: linux-zen (primary, BORE+BBR3+PREEMPT_DYNAMIC) + linux-lts (real fallback).
-# linux plain queda fuera a propósito: rebasea al mismo ritmo que zen, no protege ante
-# regresiones upstream. linux-hardened queda fuera por incompatibilidades recurrentes
-# con stacks GPU propietarios y módulos DKMS.
+# Pin: linux-zen (BORE+BBR3+PREEMPT_DYNAMIC) + linux-lts (real fallback).
+# Excluded: linux plain (no fallback value vs zen), linux-hardened (GPU/DKMS issues).
 install_base_system() {
   print_title "INSTALL BASE SYSTEM"
   print_info "Refreshing PGP keyring"
 
-  # NTP antes de tocar firmas: evita rechazo de paquetes por reloj desincronizado en VMs/live
+  # NTP first to avoid signature rejection from clock skew (VMs/live ISO).
   timedatectl set-ntp true 2>/dev/null || true
-
   pacman -Sy --noconfirm archlinux-keyring
 
   KERNEL_PRIMARY="linux-zen"
-  print_info "Kernels: linux-zen (primario, performance) + linux-lts (fallback recovery)."
+  print_info "Kernels: linux-zen (primary) + linux-lts (fallback)."
   local kernels=("linux-zen" "linux-zen-headers" "linux-lts" "linux-lts-headers")
 
-  # Microcode sólo en x86_64 (no existe para aarch64/otras)
+  # Microcode is x86_64 only.
   local ucode_pkgs=()
   [[ "$ARCHI" == "x86_64" ]] && ucode_pkgs=("intel-ucode" "amd-ucode")
 
-  print_info "Installing base con paquetes explícitos (paquete 'base', no grupo legacy)"
+  print_info "Running pacstrap (base package, not legacy group)."
 
-  # pacstrap -K usa keyring fresco; estándar moderno
   pacstrap -K "${MOUNTPOINT}" \
     base base-devel \
     "${kernels[@]}" \
@@ -826,12 +768,11 @@ install_base_system() {
     parted efibootmgr
 
   if [[ $? -ne 0 ]]; then
-    print_error "pacstrap a ${MOUNTPOINT} falló. Causas comunes: red caída, mirror lento/corrupto, espacio insuficiente en /."
-    print_warning "Las particiones siguen montadas — puedes reintentar Initial Setup (mirrors) y luego este paso."
+    print_error "pacstrap failed. Common causes: network down, slow/corrupt mirror, no space on /."
+    print_warning "Partitions remain mounted — retry Initial Setup (mirrors) then this step."
     return 1
   fi
 
-  # Servicios base habilitados para primer boot
   arch_chroot "systemctl enable NetworkManager.service"
   arch_chroot "systemctl enable systemd-resolved.service"
   arch_chroot "systemctl enable systemd-timesyncd.service"
@@ -841,10 +782,9 @@ install_base_system() {
   arch_chroot "systemctl enable reflector.timer" 2>/dev/null || true
   arch_chroot "systemctl enable nftables.service"
 
-  # Zen performance/security baseline (sysctl, udev, modprobe, zram, resolved)
   configure_zen_tuning
 
-  # NetworkManager: backend iwd (WiFi moderno) + DNS via systemd-resolved
+  # NetworkManager: iwd backend + systemd-resolved DNS.
   mkdir -p "${MOUNTPOINT}"/etc/NetworkManager/conf.d
   cat > "${MOUNTPOINT}"/etc/NetworkManager/conf.d/dns.conf <<'EOF'
 [main]
@@ -857,7 +797,6 @@ wifi.backend=iwd
 EOF
   ln -sf /run/systemd/resolve/stub-resolv.conf "${MOUNTPOINT}"/etc/resolv.conf
 
-  # Accesibilidad opcional
   if is_package_installed "espeakup"; then
     pacstrap -K "${MOUNTPOINT}" alsa-utils espeakup brltty
     arch_chroot "systemctl enable espeakup.service"
@@ -866,18 +805,16 @@ EOF
 #}}}
 #CONFIGURE KEYMAP {{{
 configure_keymap() {
-  #ADD KEYMAP TO THE NEW SETUP
   echo "KEYMAP=$KEYMAP" >"${MOUNTPOINT}"/etc/vconsole.conf
 }
 #}}}
 #REQUIRE_BASE_INSTALLED {{{
-# Helper: chequea que pacstrap (paso 3) ya corrió antes de tocar /mnt/etc.
-# Evita fallos opacos cuando el usuario ejecuta pasos fuera de orden.
+# Guard for steps that touch /mnt/etc. Fails clearly when run out of order.
 require_base_installed() {
-  local step_name="${1:-Este paso}"
+  local step_name="${1:-This step}"
   if [[ ! -d "${MOUNTPOINT}/etc" ]] || [[ ! -f "${MOUNTPOINT}/etc/pacman.conf" ]]; then
-    print_error "${step_name} requiere que el sistema base esté instalado en ${MOUNTPOINT}."
-    print_warning "Ejecuta primero el paso 3 (Install Base System)."
+    print_error "${step_name} requires base system installed at ${MOUNTPOINT}."
+    print_warning "Run step 3 (Install Base System) first."
     return 1
   fi
   return 0
@@ -887,9 +824,8 @@ require_base_installed() {
 configure_fstab() {
   print_title "FSTAB - https://wiki.archlinux.org/index.php/Fstab"
   require_base_installed "Configure Fstab" || return 1
-  # Auto-pick: PARTUUID en UEFI (estable, sobrevive reformats y cambios de orden de disco)
-  # o UUID en BIOS (estable a nivel filesystem). Ambos son la opción correcta en 2026;
-  # DEV (/dev/sdaN) es frágil porque cambia con USBs/orden de disco.
+  # Auto: PARTUUID on UEFI / UUID on BIOS. Both survive reformats and disk reordering;
+  # DEV (/dev/sdaN) is fragile against USB hotplug.
   if [[ ! -f ${MOUNTPOINT}/etc/fstab.aui ]]; then
     cp "${MOUNTPOINT}"/etc/fstab "${MOUNTPOINT}"/etc/fstab.aui
   else
@@ -897,34 +833,32 @@ configure_fstab() {
   fi
 
   if [[ $UEFI -eq 1 ]]; then
-    print_info "UEFI → fstab usando PARTUUID (estable ante reformats y cambios de orden)."
+    print_info "UEFI → fstab using PARTUUID."
     genfstab -t PARTUUID -p "${MOUNTPOINT}" >>"${MOUNTPOINT}"/etc/fstab \
-      || { print_error "genfstab -t PARTUUID falló. ¿Está / montado en ${MOUNTPOINT}?"; return 1; }
+      || { print_error "genfstab -t PARTUUID failed. Is / mounted at ${MOUNTPOINT}?"; return 1; }
     fstab="PARTUUID"
   else
-    print_info "BIOS → fstab usando UUID (estable a nivel filesystem)."
+    print_info "BIOS → fstab using UUID."
     genfstab -U -p "${MOUNTPOINT}" >>"${MOUNTPOINT}"/etc/fstab \
-      || { print_error "genfstab -U falló. ¿Está / montado en ${MOUNTPOINT}?"; return 1; }
+      || { print_error "genfstab -U failed. Is / mounted at ${MOUNTPOINT}?"; return 1; }
     fstab="UUID"
   fi
 
-  print_success "/etc/fstab generado. Revisable con: nano ${MOUNTPOINT}/etc/fstab"
+  print_success "/etc/fstab generated. Review: nano ${MOUNTPOINT}/etc/fstab"
 }
 #}}}
 #CONFIGURE HOSTNAME {{{
 configure_hostname() {
   print_title "HOSTNAME - https://wiki.archlinux.org/index.php/HOSTNAME"
   require_base_installed "Configure Hostname" || return 1
-  print_info "Hostname RFC1123: minúsculas/dígitos/guion, no empieza ni termina en guion, máx 63 chars."
-  # Re-prompt hasta que el input pase la validación. Evita escribir basura en /etc/hostname
-  # y bloquea cualquier carácter que rompería el sed posterior (/, ', ;, etc.).
+  print_info "RFC1123 hostname: lowercase/digits/hyphen, no leading/trailing hyphen, max 63 chars."
   while true; do
-    printf "%s" "Hostname [ej: arch-laptop]: "
+    printf "%s" "Hostname [e.g. arch-laptop]: "
     read -r host_name
     if [[ "$host_name" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; then
       break
     fi
-    print_warning "Hostname inválido: '$host_name'. Usa minúsculas/dígitos/guion, 1-63 chars, sin guion al inicio o final."
+    print_warning "Invalid hostname: '$host_name'."
   done
 
   echo "$host_name" >"${MOUNTPOINT}"/etc/hostname
@@ -933,7 +867,7 @@ configure_hostname() {
   else
     cp "${MOUNTPOINT}"/etc/hosts.aui "${MOUNTPOINT}"/etc/hosts
   fi
-  # host_name validado: sólo [a-z0-9-] → seguro en sed sin escapar
+  # host_name validated: only [a-z0-9-] → safe in sed without escaping.
   arch_chroot "sed -i '/127.0.0.1/s/\$/ ${host_name}/' /etc/hosts"
   arch_chroot "sed -i '/::1/s/\$/ ${host_name}/' /etc/hosts"
 }
@@ -942,7 +876,7 @@ configure_hostname() {
 configure_timezone() {
   print_title "TIMEZONE - https://wiki.archlinux.org/index.php/Timezone"
   require_base_installed "Configure Timezone" || return 1
-  print_info "In an operating system the time (clock) is determined by four parts: Time value, Time standard, Time Zone, and DST (Daylight Saving Time if applicable)."
+  print_info "Time is determined by Time value, Time standard, Time Zone, and DST."
   OPTION=n
   while [[ $OPTION != y ]]; do
     settimezone
@@ -959,7 +893,7 @@ configure_timezone() {
 configure_hardwareclock() {
   print_title "HARDWARE CLOCK TIME - https://wiki.archlinux.org/index.php/Internationalization"
   require_base_installed "Configure Hardware Clock" || return 1
-  print_info "This is set in /etc/adjtime. Set the hardware clock mode uniformly between your operating systems on the same machine. Otherwise, they will overwrite the time and cause clock shifts (which can cause time drift correction to be miscalibrated)."
+  print_info "Set the hardware clock mode uniformly across OSes on this machine. Stored in /etc/adjtime."
   hwclock_list=('UTC' 'Localtime')
   PS3="$prompt1"
   select OPT in "${hwclock_list[@]}"; do
@@ -981,7 +915,7 @@ configure_hardwareclock() {
 configure_locale() {
   print_title "LOCALE - https://wiki.archlinux.org/index.php/Locale"
   require_base_installed "Configure Locale" || return 1
-  print_info "Locales are used in Linux to define which language the user uses. As the locales define the character sets being used as well, setting up the correct locale is especially important if the language contains non-ASCII characters."
+  print_info "Locale defines language and character set."
   OPTION=n
   while [[ $OPTION != y ]]; do
     setlocale
@@ -996,32 +930,39 @@ configure_locale() {
 configure_mkinitcpio() {
   print_title "MKINITCPIO - https://wiki.archlinux.org/index.php/Mkinitcpio"
 
-  # PRE-CHECK: este paso requiere que pacstrap haya corrido (paso 3). Sin él,
-  # /mnt/etc/mkinitcpio.conf no existe → sed falla silenciosamente y arch_chroot
-  # con /mnt vacío produce errores opacos. Diagnóstico claro en lugar de fallo
-  # silencioso confuso.
   if [[ ! -f "${MOUNTPOINT}/etc/mkinitcpio.conf" ]]; then
-    print_error "${MOUNTPOINT}/etc/mkinitcpio.conf no existe."
-    print_warning "Este paso depende del paso 3 (Install Base System). Ejecútalo primero."
+    print_error "${MOUNTPOINT}/etc/mkinitcpio.conf missing."
+    print_warning "This step depends on step 3 (Install Base System). Run it first."
     return 1
   fi
   if ! arch_chroot "command -v mkinitcpio >/dev/null 2>&1"; then
-    print_error "El binario mkinitcpio no está en ${MOUNTPOINT}. Pacstrap incompleto?"
+    print_error "mkinitcpio binary missing in ${MOUNTPOINT}. Pacstrap incomplete?"
     return 1
   fi
 
-  print_info "Configurando initramfs con hooks systemd (sd-encrypt + sd-lvm2). Más robusto y compatible con FIDO2/TPM en fortress."
+  print_info "Configuring initramfs: sd-encrypt (systemd LUKS) + lvm2 (legacy udev, more reliable)."
 
-  # Hooks systemd-based (reemplaza udev/encrypt/lvm2 legacy)
-  # Orden importante: base systemd autodetect microcode modconf kms keyboard sd-vconsole block [sd-encrypt] [sd-lvm2] filesystems fsck
+  # sd-lvm2 has recurring bugs (2024-2026) where VG doesn't activate post-LUKS-unlock
+  # ("Timed out waiting for /dev/mapper/<vg>-<lv>"). Legacy lvm2 uses udev rules that
+  # fire on every new block device — activation guaranteed. sd-encrypt + lvm2 is
+  # officially supported per Arch wiki.
   local hooks="base systemd autodetect microcode modconf kms keyboard sd-vconsole block"
   [[ $LUKS -eq 1 ]] && hooks="$hooks sd-encrypt"
-  [[ $LVM -eq 1 ]] && hooks="$hooks sd-lvm2"
+  [[ $LVM -eq 1 ]] && hooks="$hooks lvm2"
   hooks="$hooks filesystems fsck"
 
   sed -i "s/^HOOKS=.*/HOOKS=($hooks)/" "${MOUNTPOINT}"/etc/mkinitcpio.conf
 
-  # zstd paralelo: initramfs más chico y descompresión usando todos los cores
+  if [[ $LUKS -eq 1 ]] && ! grep -qE '^HOOKS=.*\bsd-encrypt\b' "${MOUNTPOINT}/etc/mkinitcpio.conf"; then
+    print_error "Hook 'sd-encrypt' not in mkinitcpio.conf after sed."
+    return 1
+  fi
+  if [[ $LVM -eq 1 ]] && ! grep -qE '^HOOKS=.*\blvm2\b' "${MOUNTPOINT}/etc/mkinitcpio.conf"; then
+    print_error "Hook 'lvm2' not in mkinitcpio.conf after sed."
+    return 1
+  fi
+
+  # zstd -19 -T0: smallest initramfs, parallel decompression.
   sed -i 's/^#\?COMPRESSION=.*/COMPRESSION="zstd"/' "${MOUNTPOINT}"/etc/mkinitcpio.conf
   if grep -q '^#\?COMPRESSION_OPTIONS=' "${MOUNTPOINT}"/etc/mkinitcpio.conf; then
     sed -i 's/^#\?COMPRESSION_OPTIONS=.*/COMPRESSION_OPTIONS=(-19 -T0)/' "${MOUNTPOINT}"/etc/mkinitcpio.conf
@@ -1029,25 +970,22 @@ configure_mkinitcpio() {
     echo 'COMPRESSION_OPTIONS=(-19 -T0)' >> "${MOUNTPOINT}"/etc/mkinitcpio.conf
   fi
 
-  print_info "mkinitcpio.conf actualizado (HOOKS=$hooks, COMPRESSION=zstd -19 -T0)."
-  print_info "Regenerando initramfs para todos los presets (zen + linux-lts)..."
+  print_info "mkinitcpio.conf updated (HOOKS=$hooks, COMPRESSION=zstd -19 -T0)."
+  print_info "Regenerating initramfs for all presets (zen + linux-lts)..."
 
-  # -P regenera para TODOS los presets instalados. Capturamos exit explícito
-  # para que run_step distinga "éxito real" de "falló silenciosamente con warnings".
   if arch_chroot "mkinitcpio -P"; then
-    # Verificación adicional: los .img tienen que existir tras la regeneración
     local missing=0
     for k in "$KERNEL_PRIMARY" "linux-lts"; do
-      [[ -f "${MOUNTPOINT}/boot/initramfs-${k}.img" ]] || { print_warning "Falta /boot/initramfs-${k}.img"; missing=1; }
+      [[ -f "${MOUNTPOINT}/boot/initramfs-${k}.img" ]] || { print_warning "Missing /boot/initramfs-${k}.img"; missing=1; }
     done
     if [[ $missing -eq 1 ]]; then
-      print_error "mkinitcpio -P terminó pero algún initramfs no se generó."
+      print_error "mkinitcpio -P finished but some initramfs not generated."
       return 1
     fi
-    print_success "initramfs regenerado: $(ls "${MOUNTPOINT}/boot/initramfs-"*.img 2>/dev/null | wc -l) imágenes."
+    print_success "initramfs regenerated: $(ls "${MOUNTPOINT}/boot/initramfs-"*.img 2>/dev/null | wc -l) images."
     return 0
   else
-    print_error "mkinitcpio -P retornó error. Revisa output arriba (módulos faltantes, hooks rotos, etc.)."
+    print_error "mkinitcpio -P failed. Check output above (missing modules, broken hooks, etc.)."
     return 1
   fi
 }
@@ -1056,40 +994,39 @@ configure_mkinitcpio() {
 install_bootloader() {
   print_title "BOOTLOADER - https://wiki.archlinux.org/index.php/Bootloader"
   require_base_installed "Install Bootloader" || return 1
-  print_info "AUI-X usa UEFI + systemd-boot. No hay ruta BIOS/legacy."
+  print_info "AUI-X uses UEFI + systemd-boot. No BIOS/legacy path."
   if [[ $UEFI -ne 1 ]]; then
-    print_error "UEFI no detectado. AUI-X no soporta BIOS/legacy."
-    print_warning "Re-bootea el live USB en modo UEFI desde el menú de boot del firmware."
+    print_error "UEFI not detected. AUI-X does not support BIOS/legacy."
+    print_warning "Re-boot the live USB in UEFI mode from the firmware boot menu."
     return 1
   fi
   bootloader="systemd-boot"
-  print_success "Bootloader seleccionado: systemd-boot"
+  print_success "Bootloader: systemd-boot"
 }
 #}}}
 #CONFIGURE BOOTLOADER {{{
-# Para sd-encrypt hooks, los kernel params son:
-#   rd.luks.name=<luks-uuid>=<mapper-name>   (preferido, robusto)
+# sd-encrypt cmdline params:
+#   rd.luks.name=<luks-uuid>=<mapper-name>   (preferred)
 #   root=/dev/mapper/<mapper-name>
-#   rd.luks.options=discard                  (si TRIM)
-# NO usar 'cryptdevice=' (eso es del hook 'encrypt' legacy, NO sd-encrypt).
+#   rd.luks.options=discard                  (if TRIM)
+# Do NOT use 'cryptdevice=' (legacy 'encrypt' hook, not sd-encrypt).
 _kernel_cmdline() {
-  # Construye los parámetros de kernel acorde a sd-encrypt + sd-lvm2.
-  # Mitigations queda en default del kernel (auto): explícito nada → postura responsable.
-  # Tuning añadido (zen-aware):
-  #   amd_pstate=active                          driver moderno en AMD Zen2+ (no-op en Intel)
-  #   split_lock_detect=off                      compat con Wine/anti-cheat
-  #   nowatchdog                                 drop kernel watchdog (latencia + batería)
-  #   quiet loglevel=3                           boot limpio; journalctl conserva todo
-  #   nvme_core.default_ps_max_latency_us=5500   evita cuelgues NVMe suspend (Samsung 980/990,
-  #                                              WD SN850). Debe ir en cmdline porque nvme_core
-  #                                              es built-in en kernels Arch (modprobe.d se ignora).
-  # Nota: nvidia_drm.modeset NO se añade aquí; lo escribe setup en /etc/modprobe.d/
-  # cuando se instala el driver, evitando flags fantasma sin GPU NVIDIA.
+  # Build kernel cmdline for sd-encrypt + lvm2 (legacy udev).
+  # Mitigations left at kernel default (auto). Tuning added:
+  #   amd_pstate=active                          modern P-state on AMD Zen2+ (no-op on Intel)
+  #   split_lock_detect=off                      Wine/anti-cheat compat
+  #   nowatchdog                                 drop kernel watchdog (latency + battery)
+  #   quiet loglevel=3                           clean boot; journalctl keeps everything
+  #   nvme_core.default_ps_max_latency_us=5500   avoid NVMe suspend hang (Samsung 980/990,
+  #                                              WD SN850). Must be in cmdline because
+  #                                              nvme_core is built-in (modprobe.d ignored).
+  # Note: nvidia_drm.modeset NOT added here — setup writes it to /etc/modprobe.d/
+  # when the driver is installed, avoiding ghost flags without an NVIDIA GPU.
   local root_spec="${ROOT_MOUNTPOINT}"
   local cmdline
 
   if [[ -z "$root_spec" ]]; then
-    print_error "ROOT_MOUNTPOINT vacío; revisa que el paso de particionado montó / correctamente."
+    print_error "ROOT_MOUNTPOINT empty; check that partitioning mounted / correctly."
     return 1
   fi
 
@@ -1106,11 +1043,10 @@ _kernel_cmdline() {
     cmdline="root=${root_spec} rw"
   fi
 
-  # rd.lvm.lv=lvm/root: CRÍTICO con sd-lvm2 + sd-encrypt.
-  # Sin esto, systemd a veces no espera a que pvscan active el VG después de abrir
-  # LUKS → timeout → emergency mode con "/dev/mapper/lvm-root not found".
-  # Forzar el wait explícito por la LV root garantiza el orden de activación.
-  [[ $LVM -eq 1 ]] && cmdline="${cmdline} rd.lvm.lv=lvm/root"
+  # LVM belt-and-suspenders (lvm2 legacy hook doesn't need these but harmless).
+  if [[ $LVM -eq 1 ]]; then
+    cmdline="${cmdline} rd.lvm.vg=lvm rd.lvm.lv=lvm/root"
+  fi
 
   cmdline="${cmdline} amd_pstate=active split_lock_detect=off nowatchdog"
   cmdline="${cmdline} nvme_core.default_ps_max_latency_us=5500"
@@ -1122,116 +1058,96 @@ configure_bootloader() {
   case $bootloader in
   systemd-boot)
     print_title "SYSTEMD-BOOT - https://wiki.archlinux.org/title/Systemd-boot"
-    print_info "Instalando systemd-boot con entradas duales: kernel primario + linux-lts (recovery)."
+    print_info "Installing systemd-boot with dual entries: primary kernel + linux-lts (recovery)."
     if [[ "$EFI_MOUNTPOINT" != "/boot" ]]; then
-      print_error "systemd-boot requiere ESP montada en /boot (actual: ${EFI_MOUNTPOINT})."
-      print_warning "Vuelve al paso de particionado y monta la ESP en /boot."
+      print_error "systemd-boot requires ESP mounted at /boot (current: ${EFI_MOUNTPOINT})."
       return 1
     fi
 
-    # Pre-check ESP: necesitamos ~256MB libres para zen+lts (vmlinuz ~12MB c/u),
-    # initramfs zstd-19 (~60MB c/u), microcode (~10MB), systemd-boot binary (~2MB).
-    # ESPs de 100MB se llenan al regenerar initramfs después → boot roto silencioso.
+    # ESP size pre-check: ~256MB needed for zen+lts vmlinuz/initramfs/microcode/systemd-boot.
+    # 100MB ESPs fill up on initramfs regen later → silent boot break.
     local esp_free_mb
     esp_free_mb=$(df -BM --output=avail "${MOUNTPOINT}${EFI_MOUNTPOINT}" 2>/dev/null | tail -1 | tr -dc '0-9')
     if [[ -n "$esp_free_mb" && "$esp_free_mb" -lt 256 ]]; then
-      print_danger "ESP en ${EFI_MOUNTPOINT} sólo tiene ${esp_free_mb}MB libres."
-      print_danger "Se recomiendan ≥256MB para zen + linux-lts + initramfs + microcode."
-      print_danger "Con esta ESP, regeneraciones futuras de initramfs pueden fallar y dejar el sistema sin boot."
-      read_input_text "Continuar a tu propio riesgo?"
+      print_danger "ESP at ${EFI_MOUNTPOINT} has only ${esp_free_mb}MB free."
+      print_danger "Recommended: 256MB+ for zen + linux-lts + initramfs + microcode."
+      read_input_text "Continue at your own risk?"
       if [[ $OPTION != y ]]; then
-        print_warning "ESP pequeña rechazada. Vuelve al paso 2 (Partition Scheme) y dale ≥512MB."
+        print_warning "Small ESP rejected. Repartition with 512MB+ ESP."
         return 1
       fi
     fi
 
-    # Pre-check ESP partition type: el firmware UEFI sólo enumera particiones marcadas
-    # como "EFI System" (GPT GUID C12A7328-F81F-11D2-BA4B-00A0C93EC93B, type "ef00"
-    # en gdisk o "BOOT" flag en parted). Sin este flag, la ESP es invisible al boot.
+    # ESP partition type pre-check: UEFI only enumerates "EFI System" (GPT EF00).
     local esp_dev esp_parttype
     esp_dev=$(findmnt -no SOURCE "${MOUNTPOINT}${EFI_MOUNTPOINT}" 2>/dev/null)
     if [[ -n "$esp_dev" ]]; then
       esp_parttype=$(lsblk -no PARTTYPE "$esp_dev" 2>/dev/null | head -1)
       if [[ "$esp_parttype" != "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" ]]; then
-        print_danger "PROBLEMA: ${esp_dev} NO tiene tipo 'EFI System Partition' (GPT EF00)."
-        print_danger "Tipo actual: ${esp_parttype:-<unknown>}"
-        print_danger "El firmware UEFI NO encontrará esta partición y el sistema no booteará."
-        print_warning "Intentando arreglar con sfdisk (sólo GPT)..."
+        print_danger "${esp_dev} is NOT type 'EFI System Partition' (GPT EF00). UEFI won't see it."
+        print_danger "Current type: ${esp_parttype:-<unknown>}"
+        print_warning "Attempting fix with sfdisk (GPT only)..."
         local disk part_num
         disk=$(lsblk -no PKNAME "$esp_dev" 2>/dev/null | head -1)
         part_num=$(echo "$esp_dev" | grep -oE '[0-9]+$')
         if [[ -n "$disk" && -n "$part_num" ]]; then
-          sfdisk --part-type "/dev/$disk" "$part_num" U 2>/dev/null \
-            && print_success "Tipo corregido a EFI System en /dev/${disk}${part_num}" \
-            || print_danger "sfdisk falló. Corrige manualmente con: gdisk /dev/${disk} → t → ${part_num} → ef00"
+          sfdisk --part-type "/dev/$disk" "$part_num" c12a7328-f81f-11d2-ba4b-00a0c93ec93b 2>/dev/null \
+            && print_success "Type fixed to EFI System on ${esp_dev}" \
+            || print_danger "sfdisk failed. Fix manually: gdisk /dev/${disk} -> t -> ${part_num} -> ef00"
         fi
       fi
     fi
 
-    # bootctl install: copia systemd-boot a /EFI/systemd/, escribe NVRAM entry,
-    # y también escribe /EFI/BOOT/BOOTX64.EFI como fallback. --graceful tolera
-    # warnings menores (típicos en chroot) sin abortar todo el install.
     arch_chroot "bootctl --esp-path=${EFI_MOUNTPOINT} install --graceful" \
-      || { print_error "bootctl install falló. Revisa que la ESP esté montada y el sistema sea UEFI."; return 1; }
+      || { print_error "bootctl install failed. Check ESP mount and UEFI mode."; return 1; }
 
-    # VERIFICACIÓN 1: ¿se copió el binario systemd-boot a /EFI/systemd/?
+    # Check 1: systemd-boot binary copied?
     local sb_bin="${MOUNTPOINT}${EFI_MOUNTPOINT}/EFI/systemd/systemd-bootx64.efi"
     if [[ ! -f "$sb_bin" ]]; then
-      print_error "systemd-bootx64.efi NO se copió a la ESP. bootctl falló silenciosamente."
+      print_error "systemd-bootx64.efi NOT copied to ESP. bootctl failed silently."
       return 1
     fi
 
-    # VERIFICACIÓN 2 (CRÍTICA): forzar /EFI/BOOT/BOOTX64.EFI como fallback.
-    # Es el path que CUALQUIER firmware UEFI ejecuta cuando no hay NVRAM entry.
-    # Sin esto, VirtualBox/QEMU/firmwares con NVRAM inestable no bootean nunca.
-    # Idempotente: copia sólo si falta o difiere.
+    # Check 2 (CRITICAL): force /EFI/BOOT/BOOTX64.EFI fallback. Any UEFI firmware
+    # runs this when no NVRAM entry exists. Without it, VirtualBox/QEMU/buggy NVRAM
+    # firmwares never boot. Idempotent.
     local fallback_dir="${MOUNTPOINT}${EFI_MOUNTPOINT}/EFI/BOOT"
     local fallback_bin="${fallback_dir}/BOOTX64.EFI"
     mkdir -p "$fallback_dir"
     if [[ ! -f "$fallback_bin" ]] || ! cmp -s "$sb_bin" "$fallback_bin"; then
       cp "$sb_bin" "$fallback_bin" \
-        || { print_error "No se pudo escribir el fallback ${fallback_bin}. ESP llena o read-only?"; return 1; }
-      print_success "Fallback /EFI/BOOT/BOOTX64.EFI escrito (rescate ante NVRAM inestable / VMs)."
-    else
-      print_info "Fallback /EFI/BOOT/BOOTX64.EFI ya presente."
+        || { print_error "Cannot write fallback ${fallback_bin}. ESP full or read-only?"; return 1; }
+      print_success "Fallback /EFI/BOOT/BOOTX64.EFI written (rescue for unstable NVRAM/VMs)."
     fi
 
-    # VERIFICACIÓN 3: ¿existe la entrada NVRAM "Linux Boot Manager"?
-    # Si no, intentamos crearla manualmente con efibootmgr (más explícito que bootctl).
+    # Check 3: NVRAM "Linux Boot Manager" entry exists? If not, create with efibootmgr.
     if [[ -d /sys/firmware/efi/efivars ]]; then
       local bm_out
       bm_out=$(arch_chroot "efibootmgr 2>/dev/null" 2>/dev/null || true)
       if ! echo "$bm_out" | grep -qiE "linux boot manager|systemd-boot"; then
-        print_warning "efibootmgr no muestra entrada NVRAM para systemd-boot. Intentando crearla..."
+        print_warning "No NVRAM entry for systemd-boot. Creating manually..."
         local disk part_num
         disk=$(lsblk -no PKNAME "$esp_dev" 2>/dev/null | head -1)
         part_num=$(echo "$esp_dev" | grep -oE '[0-9]+$')
         if [[ -n "$disk" && -n "$part_num" ]]; then
           arch_chroot "efibootmgr --create --disk /dev/${disk} --part ${part_num} --label 'Linux Boot Manager' --loader '\\EFI\\systemd\\systemd-bootx64.efi'" \
-            && print_success "Entrada NVRAM creada manualmente." \
-            || print_warning "efibootmgr no pudo crear la entrada NVRAM. El sistema seguirá booteando via /EFI/BOOT/BOOTX64.EFI (fallback)."
+            && print_success "NVRAM entry created." \
+            || print_warning "efibootmgr could not create NVRAM entry. System boots via BOOTX64.EFI fallback."
         fi
-      else
-        print_success "Entrada NVRAM 'Linux Boot Manager' presente en efibootmgr."
       fi
-    else
-      print_warning "efivarfs no disponible — boot dependerá del fallback /EFI/BOOT/BOOTX64.EFI (esto está OK en VMs)."
     fi
 
     local cmdline kernels k entry_path primary_entry_written
     cmdline=$(_kernel_cmdline) || return 1
     primary_entry_written=0
 
-    # Detectar kernels instalados
     mapfile -t kernels < <(arch-chroot "${MOUNTPOINT}" bash -c 'ls /boot/vmlinuz-* 2>/dev/null | sed "s|/boot/vmlinuz-||"')
 
-    # Detectar microcodes instalados → emitir sólo las líneas initrd que existen
-    # (evita "Failed to read initrd" en cada boot por archivos fantasma).
+    # Emit only initrd lines for microcodes that exist (avoids "Failed to read initrd" warnings).
     local ucode_lines=""
     [[ -f "${MOUNTPOINT}${EFI_MOUNTPOINT}/intel-ucode.img" ]] && ucode_lines+="initrd   /intel-ucode.img"$'\n'
     [[ -f "${MOUNTPOINT}${EFI_MOUNTPOINT}/amd-ucode.img"   ]] && ucode_lines+="initrd   /amd-ucode.img"$'\n'
 
-    # loader.conf con timeout para acceder al menú
     mkdir -p "${MOUNTPOINT}${EFI_MOUNTPOINT}/loader/entries"
     cat > "${MOUNTPOINT}${EFI_MOUNTPOINT}/loader/loader.conf" <<EOF
 default  arch.conf
@@ -1240,7 +1156,6 @@ console-mode max
 editor   no
 EOF
 
-    # Entry primario (kernel zen u otro seleccionado)
     for k in "${kernels[@]}"; do
       [[ "$k" == "$KERNEL_PRIMARY" ]] || continue
       entry_path="${MOUNTPOINT}${EFI_MOUNTPOINT}/loader/entries/arch.conf"
@@ -1253,12 +1168,11 @@ EOF
       primary_entry_written=1
     done
     if [[ $primary_entry_written -ne 1 ]]; then
-      print_error "No se generó arch.conf para ${KERNEL_PRIMARY}. ¿/boot/vmlinuz-${KERNEL_PRIMARY} existe?"
-      print_warning "Vuelve al paso 3 (Install Base System) — el kernel no quedó en /boot."
+      print_error "arch.conf not generated for ${KERNEL_PRIMARY}. Does /boot/vmlinuz-${KERNEL_PRIMARY} exist?"
+      print_warning "Run step 3 (Install Base System) — kernel not in /boot."
       return 1
     fi
 
-    # Entry de RESCUE para linux-lts (recovery, red de seguridad)
     if arch_chroot "pacman -Q linux-lts" >/dev/null 2>&1; then
       entry_path="${MOUNTPOINT}${EFI_MOUNTPOINT}/loader/entries/arch-lts.conf"
       cat > "$entry_path" <<EOF
@@ -1269,7 +1183,6 @@ options  ${cmdline}
 EOF
     fi
 
-    # Entry adicional de rescue mode (single user) sobre LTS
     entry_path="${MOUNTPOINT}${EFI_MOUNTPOINT}/loader/entries/rescue.conf"
     cat > "$entry_path" <<EOF
 title    Arch Linux RESCUE (single user, LTS)
@@ -1278,7 +1191,21 @@ ${ucode_lines}initrd   /initramfs-linux-lts.img
 options  ${cmdline} systemd.unit=rescue.target
 EOF
 
-    print_success "Bootloader instalado. Revisable post-install con: nano ${EFI_MOUNTPOINT}/loader/loader.conf"
+    local arch_conf="${MOUNTPOINT}${EFI_MOUNTPOINT}/loader/entries/arch.conf"
+    if [[ $LUKS -eq 1 ]] && ! grep -q "rd.luks.name=" "$arch_conf"; then
+      print_error "arch.conf missing rd.luks.name= — system won't open LUKS at boot."
+      return 1
+    fi
+    if [[ $LVM -eq 1 ]] && ! grep -qE 'rd\.lvm\.(vg|lv)=' "$arch_conf"; then
+      print_error "arch.conf missing rd.lvm.vg/lv — VG won't activate -> emergency mode."
+      return 1
+    fi
+    if ! grep -q "^options " "$arch_conf"; then
+      print_error "arch.conf missing 'options' line — kernel boots without parameters."
+      return 1
+    fi
+
+    print_success "Bootloader installed and verified. Cmdline: $(grep '^options' "$arch_conf" | cut -c1-100)..."
     ;;
   esac
 }
@@ -1288,7 +1215,7 @@ root_password() {
   print_title "ROOT PASSWORD"
   require_base_installed "Root Password" || return 1
   print_warning "Enter your new root password"
-  arch_chroot "passwd" || { print_error "passwd falló."; return 1; }
+  arch_chroot "passwd" || { print_error "passwd failed."; return 1; }
   pause_function
 }
 #}}}
@@ -1296,13 +1223,13 @@ root_password() {
 install_aur_helper() {
   print_title "AUR HELPER"
   require_base_installed "AUR Helper" || return 1
-  print_info "Instalando paru en Phase 1 para que setup/post-install puedan usar AUR si hace falta."
+  print_info "Install paru in Phase 1 so setup/post-install can use AUR."
 
-  local opts=("paru (recomendado)" "Skip")
+  local opts=("paru (recommended)" "Skip")
   PS3="$prompt1"
   select OPT in "${opts[@]}"; do
     case "$OPT" in
-      "paru (recomendado)") AUR_HELPER="paru"; break ;;
+      "paru (recommended)") AUR_HELPER="paru"; break ;;
       "Skip") AUR_HELPER=""; return ;;
       *) invalid_option ;;
     esac
@@ -1324,21 +1251,20 @@ EOF
   arch_chroot "userdel -r aurbuild >/dev/null 2>&1 || true"
 
   if [[ $ret -ne 0 ]]; then
-    print_error "Build de paru falló. Revisa logs (network/AUR/build) y reintenta."
-    print_info "AUR helper es opcional — puedes continuar sin él e instalarlo post-reboot."
+    print_error "paru build failed. Check network/AUR/build logs above."
+    print_info "AUR helper is optional — you can continue and install it post-reboot."
     return 1
   fi
-  print_success "paru instalado en el sistema nuevo."
+  print_success "paru installed."
   pause_function
 }
 #}}}
 #SAFETY NET DEL INSTALL {{{
-# Red de seguridad pre-reboot: backup header LUKS, snapshot /etc, RECOVERY.md.
-# NO es hardening de seguridad (eso lo hace aui-fortress por separado).
-# Es la red para que el primer boot sea recuperable si algo va mal.
+# Recovery safety net pre-reboot: LUKS header backup, /etc snapshot, RECOVERY.md.
+# Not security hardening (fortress does that). Makes first boot recoverable if things break.
 safety_net() {
-  print_title "RED DE SEGURIDAD DEL INSTALL"
-  print_info "Generando red de seguridad pre-reboot: header LUKS, baseline de /etc, RECOVERY.md."
+  print_title "INSTALL SAFETY NET"
+  print_info "Generating LUKS header backup, /etc baseline, and RECOVERY.md."
 
   mkdir -p "${MOUNTPOINT}"/var/lib/aui-x
   mkdir -p "${MOUNTPOINT}"/root
@@ -1346,58 +1272,52 @@ safety_net() {
   local hostname_val backup_path luks_dev
   hostname_val=$(cat "${MOUNTPOINT}"/etc/hostname 2>/dev/null || echo "arch")
 
-  # Backup LUKS header (staging temporal en /root del sistema nuevo)
   if [[ $LUKS -eq 1 ]] && [[ -n "$LUKS_DISK" ]]; then
     luks_dev="/dev/${LUKS_DISK}"
     backup_path="${MOUNTPOINT}/root/luks-header-${hostname_val}.bin"
-    print_info "Backup del header LUKS de ${luks_dev}"
+    print_info "Backing up LUKS header from ${luks_dev}"
     if cryptsetup luksHeaderBackup "$luks_dev" --header-backup-file "$backup_path"; then
       chmod 400 "$backup_path"
-      print_success "Header LUKS staged en /root/luks-header-${hostname_val}.bin"
-      print_danger "ADVERTENCIA: este archivo NO sirve si el disco muere."
-      print_danger "Muévelo HOY a dos medios externos cifrados distintos y bórralo de /root tras verificar checksums."
+      print_success "LUKS header staged at /root/luks-header-${hostname_val}.bin"
+      print_danger "WARNING: this file is useless if the disk dies."
+      print_danger "Move it TODAY to two separate encrypted external media, then delete from /root."
     else
-      print_warning "luksHeaderBackup falló; revisa manualmente tras reboot."
+      print_warning "luksHeaderBackup failed; check manually after reboot."
     fi
   else
-    print_info "LUKS no detectado; saltando backup de header."
+    print_info "No LUKS; skipping header backup."
   fi
 
-  # Snapshot baseline de /etc (referencia para comparación post-corrupción)
-  print_info "Generando baseline de /etc..."
+  print_info "Generating /etc baseline..."
   arch_chroot "tar --zstd -cf /var/lib/aui-x/etc-baseline.tar.zst -C / etc 2>/dev/null" || \
-    print_warning "Snapshot de /etc falló (no fatal)."
+    print_warning "/etc snapshot failed (non-fatal)."
 
-  # RECOVERY.md con procedimientos — bloques condicionales según layout real
   local luks_dev_hint="/dev/${LUKS_DISK:-<device>}"
 
   cat > "${MOUNTPOINT}"/root/RECOVERY.md <<RECOVERY_HEADER_EOF
 # Recovery — aui-x base install
 
-Layout detectado en este install:  LUKS=${LUKS}  LVM=${LVM}  LUKS_DEVICE=${luks_dev_hint}
+Layout detected: LUKS=${LUKS} LVM=${LVM} LUKS_DEVICE=${luks_dev_hint}
 
-## Si el sistema no bootea con kernel-zen
+## If the system does not boot with linux-zen
 
-En el menú del bootloader selecciona la entrada \`linux-lts\`. Es el kernel de fallback
-instalado SIEMPRE como red de seguridad.
+In the bootloader menu select the \`linux-lts\` entry. Fallback kernel always installed.
 
-## Procedimiento de chroot desde live USB
+## Chroot procedure from live USB
 RECOVERY_HEADER_EOF
 
   if [[ $LUKS -eq 1 && $LVM -eq 1 ]]; then
     cat >> "${MOUNTPOINT}"/root/RECOVERY.md <<RECOVERY_LVMLUKS_EOF
 
-Layout **LVM sobre LUKS** (default del proyecto):
+Layout: **LVM on LUKS** (project default):
 
-1. Boot desde live USB de Arch.
-2. Desbloquea el contenedor LUKS (passphrase del slot 0 — intacta tras fortress):
+1. Boot from Arch live USB.
+2. Unlock LUKS (slot-0 passphrase — untouched by fortress):
        cryptsetup open ${luks_dev_hint} cryptroot
-3. Activa el volume group y monta el LV root:
+3. Activate VG and mount root LV:
        vgchange -ay lvm
        mount /dev/mapper/lvm-root /mnt
-       # Si existe LV home separado:
        mount /dev/mapper/lvm-home /mnt/home 2>/dev/null || true
-       # ESP (ajusta la partición):
        mount /dev/<esp-partition> /mnt/boot
 4. Chroot:
        arch-chroot /mnt
@@ -1405,12 +1325,12 @@ RECOVERY_LVMLUKS_EOF
   elif [[ $LUKS -eq 1 ]]; then
     cat >> "${MOUNTPOINT}"/root/RECOVERY.md <<RECOVERY_LUKS_EOF
 
-Layout **LUKS sin LVM**:
+Layout: **LUKS without LVM**:
 
-1. Boot desde live USB de Arch.
-2. Desbloquea el contenedor LUKS (passphrase del slot 0 — intacta tras fortress):
+1. Boot from Arch live USB.
+2. Unlock LUKS:
        cryptsetup open ${luks_dev_hint} cryptroot
-3. Monta root y ESP:
+3. Mount root and ESP:
        mount /dev/mapper/cryptroot /mnt
        mount /dev/<esp-partition> /mnt/boot
 4. Chroot:
@@ -1419,11 +1339,11 @@ RECOVERY_LUKS_EOF
   else
     cat >> "${MOUNTPOINT}"/root/RECOVERY.md <<'RECOVERY_PLAIN_EOF'
 
-Layout **sin cifrado**:
+Layout: **unencrypted**:
 
-1. Boot desde live USB de Arch.
-2. Identifica root con `lsblk -f` (busca el FS donde está /etc).
-3. Monta root y ESP:
+1. Boot from Arch live USB.
+2. Identify root with `lsblk -f`.
+3. Mount root and ESP:
        mount /dev/<root-partition> /mnt
        mount /dev/<esp-partition> /mnt/boot
 4. Chroot:
@@ -1433,97 +1353,54 @@ RECOVERY_PLAIN_EOF
 
   cat >> "${MOUNTPOINT}"/root/RECOVERY.md <<'RECOVERY_COMMON_EOF'
 
-## Si aui-fortress está instalado y bloquea el boot
+## If aui-fortress is installed and blocks boot
 
-Tras hacer chroot (pasos arriba), desactiva fortress:
+After chroot (above), disable fortress:
 
     aui-fortress rollback --all
 
-Sal del chroot y reinicia.
+Exit chroot and reboot.
 
-## Si pierdes el token FIDO2 o el USB de presence
+## If you lose the FIDO2 token or presence USB
 
-Usa la passphrase del slot 0 (la que pusiste durante el install). Está SIEMPRE en slot 0;
-ninguna operación de fortress la toca.
+Use the slot-0 passphrase (the one set during install). Always in slot 0; fortress never touches it.
 
-## Si pierdes la passphrase del slot 0
+## If you lose the slot-0 passphrase
 
-Necesitas el backup del header LUKS (luks-header-<hostname>.bin) que generó este install:
+Restore from the LUKS header backup (luks-header-<hostname>.bin):
 
     cryptsetup luksHeaderRestore /dev/<device> --header-backup-file luks-header-<hostname>.bin
 
-Luego usa la passphrase original de cuando se creó el header.
+Then use the original passphrase from when the header was created.
 
-Si NO tienes el backup del header → datos perdidos. Por eso debe vivir en dos USB cifrados
-externos, no en /root.
+Without the header backup -> data lost. It must live on two separate encrypted USBs, not /root.
 
-## Comandos útiles
+## Useful commands
 
-- journalctl -b                                 logs del último boot
-- bootctl list                                  entradas del bootloader systemd-boot
-- cryptsetup luksDump /dev/<device>             estado de slots LUKS
-- lsblk -f                                      filesystems y UUIDs
-- vgs ; lvs                                     VGs y LVs activos
-- ls /var/lib/aui-x/etc-baseline.tar.zst        snapshot de /etc al terminar el install
+- journalctl -b                                 last-boot logs
+- bootctl list                                  systemd-boot entries
+- cryptsetup luksDump /dev/<device>             LUKS slot status
+- lsblk -f                                      filesystems and UUIDs
+- vgs ; lvs                                     active VGs and LVs
+- ls /var/lib/aui-x/etc-baseline.tar.zst        /etc snapshot from install end
 RECOVERY_COMMON_EOF
   chmod 600 "${MOUNTPOINT}"/root/RECOVERY.md
 
-  # Verificación de los items — incluye checks LOAD-BEARING (sin estos no boota)
-  print_info "Checklist de red de seguridad:"
-
-  local boot_efi="${MOUNTPOINT}${EFI_MOUNTPOINT:-/boot}"
-  local sb_binary="${boot_efi}/EFI/systemd/systemd-bootx64.efi"
-  local sb_fallback="${boot_efi}/EFI/BOOT/BOOTX64.EFI"
-  local entries_count
-  entries_count=$(ls "${boot_efi}/loader/entries/"*.conf 2>/dev/null | wc -l)
-  local kernel_present=NO
-  [[ -f "${boot_efi}/vmlinuz-${KERNEL_PRIMARY:-linux-zen}" ]] && kernel_present=YES
-
-  # LOAD-BEARING (sistema no boota sin esto)
-  printf "  %-30s %s\n" "[BOOT] systemd-boot binary:" \
-    "$([[ -f "$sb_binary" ]] && echo YES || echo "${BRed}NO — sistema NO booteará${Reset}")"
-  printf "  %-30s %s\n" "[BOOT] BOOTX64.EFI fallback:" \
-    "$([[ -f "$sb_fallback" ]] && echo "YES (rescate sin NVRAM)" || echo "${BRed}NO — riesgo en VMs${Reset}")"
-  printf "  %-30s %s\n" "[BOOT] loader entries:" \
-    "$([[ "$entries_count" -gt 0 ]] && echo "YES ($entries_count)" || echo "${BRed}NO — sin entradas${Reset}")"
-  printf "  %-30s %s\n" "[BOOT] kernel en ESP:" \
-    "$kernel_present"
-  printf "  %-30s %s\n" "[BOOT] root password set:" \
-    "$(arch_chroot 'passwd -S root 2>/dev/null | grep -qE " P | NP " && echo YES || echo NO' 2>/dev/null || echo UNKNOWN)"
-  printf "  %-30s %s\n" "[BOOT] NVRAM entry:" \
-    "$(arch_chroot 'efibootmgr 2>/dev/null | grep -qiE "linux boot manager|systemd-boot" && echo YES || echo NO' 2>/dev/null || echo "N/A (no efivarfs)")"
-
-  # RECOVERY (puedes recuperar si algo falla)
-  printf "  %-30s %s\n" "linux-lts instalado:" \
+  # Recovery artifacts only (boot integrity is verified inline in each step).
+  print_info "Recovery artifacts (not in main menu):"
+  printf "  %-25s %s\n" "linux-lts installed:" \
     "$(arch_chroot 'pacman -Q linux-lts' >/dev/null 2>&1 && echo YES || echo NO)"
-  printf "  %-30s %s\n" "LUKS header staged:" \
+  printf "  %-25s %s\n" "LUKS header staged:" \
     "$([[ -n "$backup_path" && -f "$backup_path" ]] && echo YES || echo SKIP)"
-  printf "  %-30s %s\n" "/etc baseline:" \
+  printf "  %-25s %s\n" "/etc baseline:" \
     "$([[ -f "${MOUNTPOINT}/var/lib/aui-x/etc-baseline.tar.zst" ]] && echo YES || echo NO)"
-  printf "  %-30s %s\n" "RECOVERY.md:" \
+  printf "  %-25s %s\n" "RECOVERY.md:" \
     "$([[ -f "${MOUNTPOINT}/root/RECOVERY.md" ]] && echo YES || echo NO)"
-
-  # TUNING (no load-bearing, sólo confirma que se aplicó)
-  printf "  %-30s %s\n" "ZRAM (auto al boot):" \
-    "$([[ -f "${MOUNTPOINT}/etc/systemd/zram-generator.conf" ]] \
-        && arch_chroot 'pacman -Q zram-generator' >/dev/null 2>&1 \
-        && echo "YES (zstd, priority 100)" || echo NO)"
-  printf "  %-30s %s\n" "Swap en disco:" \
-    "none (ZRAM-only by design)"
-
-  # Si algún [BOOT] crítico falla, gritamos. El fallback BOOTX64.EFI rescata casi todo.
-  if [[ ! -f "$sb_binary" ]] || [[ ! -f "$sb_fallback" ]] || [[ "$entries_count" -eq 0 ]] || [[ "$kernel_present" != "YES" ]]; then
-    print_danger ""
-    print_danger "PELIGRO: el bootloader/ESP no quedó completo. Si reinicias ahora, NO booteará."
-    print_danger "Vuelve al paso 10 (Install Bootloader) antes de continuar."
-    print_danger ""
-  fi
 }
 #}}}
 #FINISH {{{
-# Validación dura pre-reboot: si falta cualquier paso crítico el sistema no boota.
-# Bug histórico: el usuario pulsaba 'd) Done' sin haber hecho 10) Bootloader o
-# 11) Root Password y reiniciaba a una live ISO sin sistema instalable.
+# Pre-reboot hard validation. Historical bug: user pressed 'd) Done' without doing
+# step 10 (Bootloader) or step 11 (Root Password) -> rebooted into live ISO.
 validate_critical_steps() {
   local missing=()
   [[ ${checklist[1]:-0}  -eq 1 ]] || missing+=("1)  Initial Setup")
@@ -1538,11 +1415,11 @@ validate_critical_steps() {
   [[ ${checklist[11]:-0} -eq 1 ]] || missing+=("11) Root Password")
 
   if [[ ${#missing[@]} -gt 0 ]]; then
-    print_danger "NO PUEDES REINICIAR: faltan pasos críticos sin los cuales el sistema no booteará."
+    print_danger "CANNOT REBOOT: critical steps missing. System will not boot."
     for m in "${missing[@]}"; do
-      print_warning "  • $m"
+      print_warning "  - $m"
     done
-    print_warning "Vuelve al menú y completa estos pasos. Sin bootloader o sin root password el reboot manda a la live ISO."
+    print_warning "Complete these steps from the menu before continuing."
     pause_function
     return 1
   fi
@@ -1552,17 +1429,14 @@ validate_critical_steps() {
 finish() {
   print_title "INSTALL COMPLETED"
 
-  # GUARD: bloquea reboot si faltan pasos críticos (caso típico de "rebooté y volví a la ISO")
   validate_critical_steps || return
 
-  # Red de seguridad antes del reboot final (no es hardening; es recuperabilidad)
   safety_net
 
-  # Copy del repo al sistema nuevo (referencia + setup post-boot)
   print_warning "\nA copy of this repository will be placed in /root/aui-x on your new system"
   mkdir -p "${MOUNTPOINT}"/root/aui-x
   cp -a "${PROJECT_ROOT}/." "${MOUNTPOINT}"/root/aui-x/
-  print_warning "Si estás en VirtualBox/VM, desmonta la ISO o pon el disco instalado primero en el orden de boot antes de reiniciar."
+  print_warning "If on VirtualBox/VM: unmount the ISO or set the disk first in boot order before rebooting."
   read_input_text "Reboot system"
   if [[ $OPTION == y ]]; then
     umount_partitions
@@ -1572,51 +1446,32 @@ finish() {
 }
 #}}}
 
-# Initial Setup: unifica keymap + editor (nano auto) + mirrorlist (país auto) en un
-# solo paso. Razón: editor ya es nano por default; mirrorlist auto-detecta país;
-# keymap es la única interacción real. Sacarlos del menú reduce 3 items a 1.
 initial_setup() {
-  print_title "INITIAL SETUP — keyboard, editor, mirrors"
-  print_info "Paso 1/3: layout de teclado para consola."
-  select_keymap
-  print_info "Paso 2/3: editor por default (auto)."
-  select_editor
-  print_info "Paso 3/3: mirrorlist con país auto-detectado."
-  configure_mirrorlist
+  print_title "INITIAL SETUP - keymap + editor + mirrors"
+  select_keymap &&
+    configure_live_editor &&
+    configure_mirrorlist
 }
 
-# run_step: feedback explícito y uniforme para cada paso del menú.
-# Diseño product-engineer: el usuario NUNCA debe quedar adivinando si un paso
-# salió bien. Cada invocación termina con UNA línea clara (✓ verde o ✗ rojo)
-# y un pause_function para que la lea ANTES de que el menú se redibuje.
-#
-# Args: <num-del-checklist> "<nombre-display>" <función-a-ejecutar> [args...]
+# Uniform success/fail line + pause, so user reads before menu redraws.
 run_step() {
   local num="$1" name="$2"
   shift 2
   if "$@"; then
     checklist[$num]=1
-    print_success "Paso ${num} (${name}) completado correctamente."
+    print_success "Step ${num} (${name}) completed."
   else
     local rc=$?
-    print_error "Paso ${num} (${name}) NO completado (exit code ${rc})."
-    print_warning "Revisa los mensajes arriba. Puedes reintentar este paso desde el menú."
+    print_error "Step ${num} (${name}) NOT completed (exit code ${rc})."
+    print_warning "Check messages above. You can retry this step from the menu."
   fi
   pause_function
 }
 
-# Wrappers para pasos compuestos. Encadenan con && para que un fallo
-# temprano corte el resto y propague el exit code real al run_step.
-_do_partitioning() {
-  umount_partitions
-  create_partition_scheme && format_partitions
-}
-_do_base_install() {
-  install_base_system && configure_keymap
-}
-_do_bootloader() {
-  install_bootloader && configure_bootloader
-}
+# Composite-step wrappers: chain with && so early failure propagates exit code.
+_do_partitioning() { umount_partitions; create_partition_scheme && format_partitions; }
+_do_base_install() { install_base_system && configure_keymap; }
+_do_bootloader()   { install_bootloader && configure_bootloader; }
 
 pause_function
 check_boot_system
@@ -1642,10 +1497,6 @@ while true; do
   echo ""
   read_input_options
   for OPT in "${OPTIONS[@]}"; do
-    # Patrón uniforme via run_step:
-    #   - éxito  → checklist[N]=1 + "✓ Paso N (name) completado" verde + pause
-    #   - fallo  → checklist[N]=0 + "✗ Paso N (name) NO completado (exit X)" rojo + pause
-    # El usuario SIEMPRE ve el resultado antes de que el menú se redibuje.
     case "$OPT" in
     1)  run_step 1  "Initial Setup"          initial_setup ;;
     2)  run_step 2  "Partition Scheme"       _do_partitioning ;;
