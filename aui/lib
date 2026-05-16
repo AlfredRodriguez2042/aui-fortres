@@ -148,7 +148,7 @@ read_confirm() {
     echo ""
     [[ -z "$OPTION" ]] && { OPTION="$default"; return 0; }
     answer=$(normalize_yes_no "$OPTION") && { OPTION="$answer"; return 0; }
-    print_warning "Responde yes/no (y/n), en mayúsculas o minúsculas."
+    print_warning "Responde yes/no (y/n), en mayusculas o minusculas."
   done
 }
 
@@ -186,7 +186,7 @@ read_size() {
   local input num unit normalized gb
 
   while true; do
-    printf "%s [ej: %s, mínimo sugerido %sG]: " "$prompt" "$default" "$min_gb"
+    printf "%s [ej: %s, minimo sugerido %sG]: " "$prompt" "$default" "$min_gb"
     read -r input
     input="${input:-$default}"
     input="${input// /}"
@@ -207,7 +207,7 @@ read_size() {
       return 0
     fi
 
-    print_warning "Formato inválido: '$input'. Usa por ejemplo: 30, 30G, 500M."
+    print_warning "Formato invalido: '$input'. Usa por ejemplo: 30, 30G, 500M."
   done
 }
 
@@ -359,7 +359,7 @@ partition_disk_cfdisk() {
 }
 
 luks_format() {
-  local part="$1" trim="$2"
+  local part="$1" trim="$2" mapper_name="${3:-cryptroot}"
   wipefs -a "$part" || return 1
   cryptsetup --batch-mode --type luks2 \
     --cipher aes-xts-plain64 --key-size 512 --hash sha512 \
@@ -368,8 +368,8 @@ luks_format() {
 
   local open_args=(open --type luks)
   [[ $trim -eq 1 ]] && open_args+=(--allow-discards)
-  cryptsetup "${open_args[@]}" "$part" cryptroot || return 1
-  echo "cryptroot"
+  cryptsetup "${open_args[@]}" "$part" "$mapper_name" || return 1
+  echo "/dev/mapper/$mapper_name"
 }
 
 luks_open() {
@@ -429,6 +429,61 @@ mount_vfat() {
   local part="$1" mountpoint="$2"
   mkdir -p "$mountpoint" || return 1
   mount -t vfat "$part" "$mountpoint"
+}
+
+list_extra_candidates() {
+  local mnt="$1" root_dev="$2" esp_dev="$3" luks_disk="$4" excluded_devices="${5:-}"
+  local candidates=()
+  local parts=() part excluded skip
+
+  mapfile -t parts < <(lsblk -lnpo NAME,TYPE | awk '$2=="part" || $2=="lvm" || $2=="crypt"{print $1}')
+  for part in "${parts[@]}"; do
+    skip=0
+    for excluded in $excluded_devices; do
+      [[ "$part" == "$excluded" ]] && { skip=1; break; }
+    done
+    [[ $skip -eq 1 ]] && continue
+    [[ "$part" == "$root_dev" ]] && continue
+    [[ "$part" == "$esp_dev" ]] && continue
+    [[ -n "$luks_disk" && "$part" == "$luks_disk" ]] && continue
+    is_efi_system_partition "$part" && continue
+    findmnt -R -n -o SOURCE "$mnt" 2>/dev/null | grep -Fxq "$part" && continue
+    candidates+=("$part")
+  done
+
+  printf "%s\n" "${candidates[@]}"
+}
+
+format_and_mount_extra() {
+  local part="$1" fs="$2" mountpoint="$3" trim="$4"
+  local mkfs_args=()
+
+  case "$fs" in
+    ext4)
+      mkfs_args=(-F)
+      [[ $trim -eq 1 ]] && mkfs_args+=(-E discard)
+      ;;
+    btrfs)
+      mkfs_args=(-f)
+      ;;
+    vfat)
+      mkfs_args=(-F32)
+      ;;
+    *)
+      print_error "Unsupported filesystem for extra partition: $fs"
+      return 1
+      ;;
+  esac
+
+  mkfs."$fs" "${mkfs_args[@]}" "$part" || return 1
+  mkdir -p "$mountpoint" || return 1
+  mount -t "$fs" "$part" "$mountpoint"
+}
+
+mount_extra() {
+  local part="$1" mountpoint="$2"
+  mkdir -p "$mountpoint" || return 1
+  mount "$part" "$mountpoint"
 }
 
 # -------------------------------------------------------------------
