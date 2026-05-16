@@ -554,6 +554,34 @@ step_bootloader() {
     print_error "Only UEFI is supported"; return 1
   fi
 
+  local esp_mount="$MOUNTPOINT/boot"
+  local esp_dev esp_free_mb esp_parttype
+  esp_dev=$(findmnt -no SOURCE "$esp_mount" 2>/dev/null || true)
+  if [[ -z "$esp_dev" ]]; then
+    print_error "ESP is not mounted at /boot. Mount the EFI System Partition at $esp_mount."
+    return 1
+  fi
+
+  if [[ -n "${state[esp]}" && "$esp_dev" != "${state[esp]}" ]]; then
+    print_warning "Mounted ESP ($esp_dev) differs from selected ESP (${state[esp]}). Using mounted ESP."
+    state[esp]="$esp_dev"
+  fi
+
+  esp_free_mb=$(df -BM --output=avail "$esp_mount" 2>/dev/null | tail -1 | tr -dc '0-9')
+  if [[ -n "$esp_free_mb" && "$esp_free_mb" -lt 256 ]]; then
+    print_danger "ESP at /boot has only ${esp_free_mb}MB free."
+    print_danger "Recommended: 256MB+ for zen + linux-lts + initramfs + microcode."
+    read_input_text "Continue at your own risk?"
+    [[ $OPTION == y ]] || return 1
+  fi
+
+  esp_parttype=$(lsblk -no PARTTYPE "$esp_dev" 2>/dev/null | head -1 | tr '[:upper:]' '[:lower:]')
+  if [[ "$esp_parttype" != "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" && "$esp_parttype" != "0xef" ]]; then
+    print_error "$esp_dev is not marked as an EFI System Partition. Firmware may boot back to the live ISO."
+    print_warning "In cfdisk, set the ESP type to EFI System, write changes, then mount it at /boot."
+    return 1
+  fi
+
   arch_chroot bootctl --esp-path=/boot install --graceful || { print_error "bootctl failed"; return 1; }
 
   local cmdline="root=${state[root_device]} rw"
@@ -611,15 +639,60 @@ step_bootloader() {
     }
   fi
 
-  if [[ -d /sys/firmware/efi/efivars ]]; then
-    if ! arch_chroot efibootmgr 2>/dev/null | grep -qi "Linux Boot Manager"; then
-      local disk=$(lsblk -no PKNAME "${state[esp]}" 2>/dev/null)
-      local part_num=$(echo "${state[esp]}" | grep -oE '[0-9]+$')
-      arch_chroot efibootmgr --create --disk "/dev/${disk}" --part "$part_num" \
-        --label "Linux Boot Manager" --loader '\\EFI\\systemd\\systemd-bootx64.efi' &>/dev/null
-    fi
-  fi
+  configure_efi_nvram "$esp_dev"
   print_success "Bootloader configured"
+}
+
+configure_efi_nvram() {
+  local esp_dev="$1"
+  local disk part_num bm_out bootnum current_order new_order entry
+
+  if [[ ! -d /sys/firmware/efi/efivars ]]; then
+    print_warning "efivarfs not available; boot will rely on /EFI/BOOT/BOOTX64.EFI fallback."
+    return 0
+  fi
+
+  disk=$(lsblk -no PKNAME "$esp_dev" 2>/dev/null | head -1)
+  part_num=$(lsblk -no PARTN "$esp_dev" 2>/dev/null | head -1)
+  if [[ -z "$disk" || -z "$part_num" ]]; then
+    print_warning "Could not resolve disk/partition for $esp_dev; fallback BOOTX64.EFI is present."
+    return 0
+  fi
+
+  arch_chroot "efibootmgr --create --disk /dev/${disk} --part ${part_num} --label 'Linux Boot Manager' --loader '\\EFI\\systemd\\systemd-bootx64.efi'" \
+    || print_warning "efibootmgr could not create/update NVRAM entry; fallback BOOTX64.EFI is present."
+
+  bm_out=$(arch_chroot "efibootmgr -v 2>/dev/null" 2>/dev/null || true)
+  bootnum=$(awk '
+    BEGIN { IGNORECASE=1 }
+    /Linux Boot Manager/ && /EFI\\systemd\\systemd-bootx64\.efi/ {
+      sub(/^Boot/, "", $1)
+      sub(/\*.*/, "", $1)
+      boot=$1
+    }
+    END { print boot }
+  ' <<< "$bm_out")
+
+  if [[ -z "$bootnum" ]]; then
+    print_warning "NVRAM entry is not visible in efibootmgr; fallback BOOTX64.EFI is present."
+    return 0
+  fi
+
+  arch_chroot "efibootmgr --bootnext ${bootnum}" \
+    || print_warning "Could not set BootNext=${bootnum}; firmware should still see fallback BOOTX64.EFI."
+
+  current_order=$(awk -F': ' '/^BootOrder:/ {print $2; exit}' <<< "$bm_out")
+  if [[ -n "$current_order" && "$current_order" != "$bootnum"* ]]; then
+    new_order="$bootnum"
+    for entry in ${current_order//,/ }; do
+      [[ "$entry" == "$bootnum" ]] && continue
+      new_order="${new_order},${entry}"
+    done
+    arch_chroot "efibootmgr --bootorder ${new_order}" \
+      || print_warning "Could not move Linux Boot Manager first in BootOrder."
+  fi
+
+  print_success "NVRAM entry checked: Boot${bootnum} (Linux Boot Manager)"
 }
 
 step_root_password() {
