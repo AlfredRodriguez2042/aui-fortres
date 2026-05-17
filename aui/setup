@@ -522,7 +522,7 @@ finish() {
   print_info "Próximos pasos:"
   echo "  1) Reboot para activar drivers GPU y display manager."
   echo "  2) Si quieres hardening (firewall, FIDO2, buskill, etc.), ejecutar 'fortress'."
-  echo "  3) Documentación: ver aui-x.md, aui-fortress.md, backups.md en el repo."
+  echo "  3) Documentación: ver aui/README.md."
   echo ""
   read_input_text "Reboot ahora?"
   if [[ $OPTION == y ]]; then
