@@ -80,4 +80,25 @@ grep -Fq 'mklabel gpt' "$log_file" || fail "automatic mklabel"
 grep -Fq 'mkpart EFI fat32 1MiB 1025MiB' "$log_file" || fail "automatic ESP partition"
 grep -Fq 'mkpart root btrfs 1025MiB 100%' "$log_file" || fail "automatic root partition"
 
+printf '== boot artifact helpers ==\n'
+old_mountpoint="$MOUNTPOINT"
+tmp_mountpoint="$(mktemp -d /tmp/aui-boot.XXXXXX)"
+MOUNTPOINT="$tmp_mountpoint"
+mkdir -p "$MOUNTPOINT/etc"
+cat > "$MOUNTPOINT/etc/fstab" <<'EOF'
+UUID=root / btrfs rw,subvol=@ 0 0
+UUID=esp /boot vfat rw 0 2
+EOF
+cat > "$MOUNTPOINT/etc/mkinitcpio.conf" <<'EOF'
+HOOKS=(base systemd autodetect microcode modconf kms keyboard sd-vconsole block sd-encrypt lvm2 filesystems fsck)
+EOF
+fstab_has_mount "/" || fail "fstab root mount check"
+fstab_has_mount "/boot" || fail "fstab boot mount check"
+mkinitcpio_has_hook "sd-encrypt" || fail "mkinitcpio sd-encrypt check"
+mkinitcpio_has_hook "lvm2" || fail "mkinitcpio lvm2 check"
+if mkinitcpio_has_hook "encrypt"; then
+  fail "mkinitcpio hook check accepted missing encrypt hook"
+fi
+MOUNTPOINT="$old_mountpoint"
+
 printf 'OK: install storage tests passed\n'

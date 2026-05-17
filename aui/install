@@ -82,6 +82,7 @@ step_base_install() {
 # -------------------------------------------------------------------
 step_fstab() {
   print_title "FSTAB"
+  local genfstab_args=(-p)
   if [[ -f "$MOUNTPOINT/etc/fstab.aui" ]]; then
     cp "$MOUNTPOINT"/etc/fstab.aui "$MOUNTPOINT"/etc/fstab
   else
@@ -89,11 +90,27 @@ step_fstab() {
     : > "$MOUNTPOINT"/etc/fstab
     cp "$MOUNTPOINT"/etc/fstab "$MOUNTPOINT"/etc/fstab.aui
   fi
-  print_info "Generating fstab with PARTUUID (UEFI)"
-  genfstab -t PARTUUID -p "$MOUNTPOINT" >> "$MOUNTPOINT"/etc/fstab || {
+
+  if [[ "${state[root_device]}" == /dev/mapper/* || ${state[lvm]} -eq 1 ]]; then
+    state[fstab_type]="UUID"
+    genfstab_args=(-U -p)
+  else
+    state[fstab_type]="PARTUUID"
+    genfstab_args=(-t PARTUUID -p)
+  fi
+
+  print_info "Generating fstab with ${state[fstab_type]}"
+  genfstab "${genfstab_args[@]}" "$MOUNTPOINT" >> "$MOUNTPOINT"/etc/fstab || {
     print_error "genfstab failed"; return 1
   }
-  state[fstab_type]="PARTUUID"
+  awk '$2 == "/" {found=1} END {exit found ? 0 : 1}' "$MOUNTPOINT"/etc/fstab || {
+    print_error "Generated fstab is missing root mount (/)."
+    return 1
+  }
+  awk '$2 == "/boot" {found=1} END {exit found ? 0 : 1}' "$MOUNTPOINT"/etc/fstab || {
+    print_error "Generated fstab is missing EFI mount (/boot)."
+    return 1
+  }
   print_success "/etc/fstab generated"
 }
 
@@ -168,6 +185,68 @@ step_mkinitcpio() {
   sed -i 's/^#\?COMPRESSION=.*/COMPRESSION="zstd"/' "$MOUNTPOINT"/etc/mkinitcpio.conf
   sed -i 's/^#\?COMPRESSION_OPTIONS=.*/COMPRESSION_OPTIONS=(-19 -T0)/' "$MOUNTPOINT"/etc/mkinitcpio.conf
   arch_chroot mkinitcpio -P || { print_error "mkinitcpio failed"; return 1; }
+}
+
+fstab_has_mount() {
+  local mountpoint="$1"
+  awk -v mountpoint="$mountpoint" '$1 !~ /^#/ && $2 == mountpoint {found=1} END {exit found ? 0 : 1}' "$MOUNTPOINT"/etc/fstab
+}
+
+mkinitcpio_has_hook() {
+  local hook="$1"
+  awk -v hook="$hook" '
+    /^HOOKS=/ {
+      gsub(/[()"]/, " ")
+      for (i = 1; i <= NF; i++) {
+        if ($i == hook) found = 1
+      }
+    }
+    END { exit found ? 0 : 1 }
+  ' "$MOUNTPOINT"/etc/mkinitcpio.conf
+}
+
+root_account_has_password() {
+  arch_chroot "passwd -S root | awk '\$2 == \"P\" {exit 0} {exit 1}'"
+}
+
+validate_boot_artifacts() {
+  local failed=0 arch_entry="$MOUNTPOINT/boot/loader/entries/arch.conf"
+
+  [[ -f "$MOUNTPOINT/etc/fstab" ]] || { print_error "Missing /etc/fstab in installed system."; failed=1; }
+  [[ -f "$MOUNTPOINT/etc/mkinitcpio.conf" ]] || { print_error "Missing /etc/mkinitcpio.conf in installed system."; failed=1; }
+  [[ -f "$arch_entry" ]] || { print_error "Missing systemd-boot entry: $arch_entry"; failed=1; }
+
+  if [[ $failed -eq 0 ]]; then
+    fstab_has_mount "/" || { print_error "fstab is missing root mount (/)."; failed=1; }
+    fstab_has_mount "/boot" || { print_error "fstab is missing EFI mount (/boot)."; failed=1; }
+    grep -Fq "root=${state[root_device]}" "$arch_entry" || {
+      print_error "Boot entry does not point to root ${state[root_device]}."
+      failed=1
+    }
+  fi
+
+  if [[ ${state[luks]} -eq 1 ]]; then
+    mkinitcpio_has_hook "sd-encrypt" || { print_error "mkinitcpio HOOKS is missing sd-encrypt."; failed=1; }
+    [[ -f "$arch_entry" ]] && grep -Eq "rd[.]luks[.]name=[^ ]+=${state[root_luks_mapper]}( |$)" "$arch_entry" || {
+      print_error "Boot entry is missing the root LUKS mapping ${state[root_luks_mapper]}."
+      failed=1
+    }
+  fi
+
+  if [[ ${state[lvm]} -eq 1 ]]; then
+    mkinitcpio_has_hook "lvm2" || { print_error "mkinitcpio HOOKS is missing lvm2."; failed=1; }
+    [[ -f "$arch_entry" ]] && grep -Fq "rd.lvm.lv=lvm/root" "$arch_entry" || {
+      print_error "Boot entry is missing the LVM root activation."
+      failed=1
+    }
+  fi
+
+  root_account_has_password || {
+    print_error "Root account is locked or has no password. Run the Root Password step again."
+    failed=1
+  }
+
+  [[ $failed -eq 0 ]]
 }
 
 step_bootloader() {
@@ -269,6 +348,7 @@ step_bootloader() {
 step_root_password() {
   print_title "ROOT PASSWORD"
   arch_chroot passwd || { print_error "password failed"; return 1; }
+  root_account_has_password || { print_error "Root account still appears locked."; return 1; }
 }
 
 step_aur_helper() {
@@ -316,6 +396,11 @@ validate_critical_steps() {
     pause_function
     return 1
   fi
+  validate_boot_artifacts || {
+    print_danger "CANNOT REBOOT: boot-critical validation failed."
+    pause_function
+    return 1
+  }
 }
 
 safety_net() {
