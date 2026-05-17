@@ -47,9 +47,9 @@ reset_partition_state
 state[partition_mode]="existing"
 state[partition_layout]="plain"
 state[root_part]="/dev/sda2"
-confirm_existing_root_reformat <<<"/dev/sda2"
-if confirm_existing_root_reformat <<<"/dev/sda3"; then
-  fail "existing root confirmation accepted wrong partition"
+confirm_existing_root_reformat <<<"YES"
+if confirm_existing_root_reformat <<<"no"; then
+  fail "existing root confirmation accepted no"
 fi
 
 printf '== automatic root disk contract ==\n'
@@ -66,11 +66,11 @@ partprobe() { :; }
 udevadm() { :; }
 wait_for_block() { :; }
 
-guided_partition_root_disk <<<"/dev/nvme0n1"
+guided_partition_root_disk <<<"Y"
 [[ "${state[esp]}" == "/dev/nvme0n1p1" ]] || fail "automatic ESP path"
 [[ "${state[root_part]}" == "/dev/nvme0n1p2" ]] || fail "automatic root path"
 grep -Fq 'mklabel gpt' "$log_file" || fail "automatic mklabel"
-grep -Fq 'mkpart EFI System fat32 1MiB 1025MiB' "$log_file" || fail "automatic ESP partition"
-grep -Fq 'mkpart Linux root btrfs 1025MiB 100%' "$log_file" || fail "automatic root partition"
+grep -Fq 'mkpart EFI fat32 1MiB 1025MiB' "$log_file" || fail "automatic ESP partition"
+grep -Fq 'mkpart root btrfs 1025MiB 100%' "$log_file" || fail "automatic root partition"
 
 printf 'OK: install storage tests passed\n'

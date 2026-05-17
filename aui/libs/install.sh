@@ -155,22 +155,27 @@ select_esp_size() {
 }
 
 guided_partition_root_disk() {
-  local disk="${state[device]}" confirm esp root
+  local disk="${state[device]}" esp root
 
   select_esp_size || return 1
   print_danger "DESTRUCTIVE: $disk will be erased and repartitioned."
   print_danger "Only this selected root disk is touched. Other disks are preserved."
-  read -rp "Type '$disk' to confirm erase: " confirm
-  if [[ "$confirm" != "$disk" ]]; then
-    print_warning "Confirmation did not match. Aborting automatic partitioning."
+  if ! confirm_destructive_action "Erase $disk and create a new ESP + root layout?" "n"; then
+    print_warning "Automatic partitioning cancelled. No changes were made."
     return 1
   fi
 
   wipefs -af "$disk" || { print_error "wipefs failed on $disk"; return 1; }
-  parted -s "$disk" mklabel gpt || return 1
-  parted -s -a optimal "$disk" mkpart "EFI System" fat32 1MiB "${state[esp_end]}" || return 1
-  parted -s "$disk" set 1 esp on || return 1
-  parted -s -a optimal "$disk" mkpart "Linux root" btrfs "${state[esp_end]}" 100% || return 1
+  parted -s "$disk" mklabel gpt || { print_error "Could not create GPT label on $disk"; return 1; }
+  parted -s -a optimal "$disk" mkpart EFI fat32 1MiB "${state[esp_end]}" || {
+    print_error "Could not create EFI partition on $disk"
+    return 1
+  }
+  parted -s "$disk" set 1 esp on || { print_error "Could not mark EFI partition as ESP"; return 1; }
+  parted -s -a optimal "$disk" mkpart root btrfs "${state[esp_end]}" 100% || {
+    print_error "Could not create root partition on $disk"
+    return 1
+  }
   partprobe "$disk" 2>/dev/null || true
   udevadm settle 2>/dev/null || true
 
@@ -270,16 +275,14 @@ prepare_root_device() {
 }
 
 confirm_existing_root_reformat() {
-  local confirm
   [[ "${state[partition_mode]}" != "existing" ]] && return 0
 
   print_danger "DESTRUCTIVE: ${state[root_part]} will be formatted as the new root."
   if [[ "${state[partition_layout]}" == "luks" ]]; then
     print_danger "It will first be overwritten with LUKS encryption."
   fi
-  read -rp "Type '${state[root_part]}' to confirm root reinstall: " confirm
-  if [[ "$confirm" != "${state[root_part]}" ]]; then
-    print_warning "Confirmation did not match. Root partition was not touched."
+  if ! confirm_destructive_action "Format ${state[root_part]} as the new root?" "n"; then
+    print_warning "Root partition was not touched."
     return 1
   fi
 }

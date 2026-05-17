@@ -156,6 +156,15 @@ read_input_text() {
   read_confirm "$1" "n" "${2:-}"
 }
 
+confirm_destructive_action() {
+  local prompt="$1"
+  local default="${2:-n}"
+  local auto_answer="${3:-}"
+
+  read_confirm "$prompt" "$default" "$auto_answer"
+  [[ "$OPTION" == "y" ]]
+}
+
 read_input_options() {
   local raw line i
   local packages=()
