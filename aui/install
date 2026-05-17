@@ -10,21 +10,6 @@ else
   exit 1
 fi
 
-install_live_deps() {
-  local live_deps=()
-  command -v nano      &>/dev/null || live_deps+=(nano)
-  command -v reflector &>/dev/null || live_deps+=(reflector)
-
-  if [[ ${#live_deps[@]} -gt 0 ]]; then
-    pacman -Sy --noconfirm --needed "${live_deps[@]}" || {
-      echo "FATAL: could not install live tools: ${live_deps[*]}" >&2
-      exit 1
-    }
-  fi
-
-  EDITOR="nano"
-}
-
 # Estado global de la instalación
 declare -A state
 state[checklist_1]=0
@@ -41,6 +26,7 @@ state[checklist_11]=0
 state[checklist_12]=0
 state[keymap]=""
 state[partition_layout]=""   # "luks" o "plain"
+state[partition_mode]=""     # "automatic" o "existing"
 state[filesystem]=""
 state[luks]=0                # si el root está cifrado
 state[lvm]=0
@@ -48,6 +34,7 @@ state[luks_disk]=""          # dispositivo físico del root LUKS
 state[luks_targets]=""       # particiones físicas cifradas
 state[luks_mappers]=""       # nombres de mappers LUKS, alineados con luks_targets
 state[root_luks_mapper]=""   # mapper LUKS usado para root
+state[root_part]=""          # partición física usada como root
 state[root_device]=""        # ruta final del dispositivo root (ej. /dev/mapper/cryptroot o /dev/sda2)
 state[luks_devices]=""       # lista separada por espacios de mapeos creados (para referencia)
 state[extra_mounts]=""       # particiones extra montadas durante el particionado
@@ -61,366 +48,6 @@ state[esp]=""
 
 MOUNTPOINT="/mnt"
 
-clear_luks_state() {
-  state[luks]=0
-  state[luks_disk]=""
-  state[luks_targets]=""
-  state[luks_mappers]=""
-  state[root_luks_mapper]=""
-  state[luks_devices]=""
-}
-
-# -------------------------------------------------------------------
-# UI: Selección de teclado
-# -------------------------------------------------------------------
-select_keymap() {
-  print_title "KEYMAP"
-  PS3="$prompt1"
-  print_info "Console keymap (editable post-install in /etc/vconsole.conf)."
-  select KEYMAP in us la-latin1 es br-abnt2 pt-latin1 uk de-latin1 fr-latin1 it dvorak; do
-    [[ -n "$KEYMAP" ]] && { loadkeys "$KEYMAP" && break; } || invalid_option
-  done
-  state[keymap]="$KEYMAP"
-}
-
-# -------------------------------------------------------------------
-# UI: Configuración de mirrors
-# -------------------------------------------------------------------
-configure_mirrorlist() {
-  print_title "MIRRORLIST"
-  [[ -f /etc/pacman.d/mirrorlist ]] && cp /etc/pacman.d/mirrorlist /etc/pacman.d/mirrorlist.bak
-  reflector --protocol https --latest 20 --fastest 10 --sort rate --save /etc/pacman.d/mirrorlist ||
-    print_warning "reflector failed — using current mirrorlist"
-  print_success "Mirrorlist generated."
-}
-
-# -------------------------------------------------------------------
-# UI: Selección de dispositivo
-# -------------------------------------------------------------------
-select_device() {
-  mapfile -t devices_list < <(lsblk -d | awk '{print "/dev/" $1}' | grep -E 'sd|hd|vd|nvme|mmcblk')
-  if [[ ${#devices_list[@]} -eq 0 ]]; then
-    print_error "No disks detected."
-    return 1
-  fi
-  devices_list+=("Back")
-  PS3="$prompt1"
-  echo -e "Attached devices:\n"
-  lsblk -lnp -I 2,3,8,9,22,34,56,57,58,65,66,67,68,69,70,71,72,91,128,129,130,131,132,133,134,135,259 | awk '{print $1,$4,$6,$7}' | column -t
-  echo -e "\nSelect device to partition (or 'Back' to abort):\n"
-  select device in "${devices_list[@]}"; do
-    [[ "$device" == "Back" ]] && return 1
-    [[ -n "$device" ]] && break
-    invalid_option
-  done
-  state[device]="$device"
-}
-
-# -------------------------------------------------------------------
-# NUEVO: Selección de encriptación (post-cfdisk)
-# -------------------------------------------------------------------
-select_encryption_targets() {
-  print_title "ENCRYPTION TARGETS"
-  mapfile -t all_parts < <(lsblk -lnpo NAME,TYPE | awk '$2=="part"{print $1}')
-  local encryptable=()
-  for part in "${all_parts[@]}"; do
-    is_efi_system_partition "$part" && continue
-    encryptable+=("$part")
-  done
-
-  if [[ ${#encryptable[@]} -eq 0 ]]; then
-    print_info "No encryptable partitions found."
-    state[partition_layout]="plain"
-    clear_luks_state
-    return 0
-  fi
-
-  print_info "Mark which partitions to encrypt (e.g., 1 3). Unmarked remain plain."
-  PS3="$prompt1"
-  echo "Available partitions:"
-  for i in "${!encryptable[@]}"; do
-    echo "  $((i+1))) ${encryptable[i]}"
-  done
-  echo "  a) Encrypt ALL"
-  echo "  n) None (skip encryption)"
-  echo "  b) Back"
-  read -rp "Your choice: " choice
-  case "$choice" in
-    a)
-      state[partition_layout]="luks"
-      state[luks_targets]="${encryptable[*]}"
-      ;;
-    n)
-      state[partition_layout]="plain"
-      clear_luks_state
-      ;;
-    b)
-      return 1
-      ;;
-    *)
-      local indices
-      IFS=' ' read -ra indices <<< "$choice"
-      local selected=()
-      for idx in "${indices[@]}"; do
-        if [[ "$idx" =~ ^[0-9]+$ ]] && (( idx >= 1 && idx <= ${#encryptable[@]} )); then
-          selected+=("${encryptable[idx-1]}")
-        fi
-      done
-      if [[ ${#selected[@]} -eq 0 ]]; then
-        print_warning "No valid partitions selected."
-        return 1
-      fi
-      state[partition_layout]="luks"
-      state[luks_targets]="${selected[*]}"
-      ;;
-  esac
-
-  # Si hay targets, ejecutar LUKS format en cada uno
-  if [[ "${state[partition_layout]}" == "luks" && -n "${state[luks_targets]}" ]]; then
-    local -a targets
-    IFS=' ' read -ra targets <<< "${state[luks_targets]}"
-    local mapper_list=()
-    local mapper_names=()
-    for part in "${targets[@]}"; do
-      local mapper_name mapper_path
-      mapper_name="crypt_$(basename "$part" | tr -c '[:alnum:]' '_')"
-      mapper_name="${mapper_name%_}"
-      print_info "Formatting LUKS on $part (mapper: $mapper_name)"
-      mapper_path=$(luks_format "$part" "$TRIM" "$mapper_name") || {
-        print_error "LUKS format failed for $part"
-        return 1
-      }
-      mapper_list+=("$mapper_path")
-      mapper_names+=("$mapper_name")
-    done
-    state[luks_devices]="${mapper_list[*]}"
-    state[luks_mappers]="${mapper_names[*]}"
-    # El primer dispositivo se asume como posible root, pero se elegirá luego
-    state[luks]=1
-  else
-    clear_luks_state
-  fi
-}
-
-# -------------------------------------------------------------------
-# UI: Selección de root (entre dispositivos disponibles)
-# -------------------------------------------------------------------
-choose_root_device() {
-  local -a candidates
-  if [[ ${state[luks]} -eq 1 ]]; then
-    IFS=' ' read -ra candidates <<< "${state[luks_devices]}"
-  else
-    mapfile -t all_parts < <(lsblk -lnpo NAME,TYPE | awk '$2=="part"{print $1}')
-    for part in "${all_parts[@]}"; do
-      is_efi_system_partition "$part" && continue
-      candidates+=("$part")
-    done
-  fi
-
-  if [[ ${#candidates[@]} -eq 0 ]]; then
-    print_error "No root candidates found."
-    return 1
-  fi
-
-  candidates+=("Cancel")
-  PS3="$prompt1"
-  echo "Select root device:"
-  select root_dev in "${candidates[@]}"; do
-    [[ "$root_dev" == "Cancel" ]] && return 1
-    [[ -n "$root_dev" ]] && break
-    invalid_option
-  done
-
-  # Si el root está cifrado, guardar también el disco físico subyacente para el cmdline
-  if [[ ${state[luks]} -eq 1 ]]; then
-    local -a luks_targets luks_devices luks_mappers
-    local i
-    IFS=' ' read -ra luks_targets <<< "${state[luks_targets]}"
-    IFS=' ' read -ra luks_devices <<< "${state[luks_devices]}"
-    IFS=' ' read -ra luks_mappers <<< "${state[luks_mappers]}"
-
-    state[root_device]="$root_dev"
-    state[luks_disk]=""
-    state[root_luks_mapper]=""
-    for i in "${!luks_devices[@]}"; do
-      if [[ "${luks_devices[i]}" == "$root_dev" ]]; then
-        state[luks_disk]="${luks_targets[i]}"
-        state[root_luks_mapper]="${luks_mappers[i]}"
-        break
-      fi
-    done
-    if [[ -z "${state[luks_disk]}" || -z "${state[root_luks_mapper]}" ]]; then
-      print_error "Could not map encrypted root $root_dev back to its LUKS partition."
-      return 1
-    fi
-  else
-    state[root_device]="$root_dev"
-    state[luks_disk]=""
-    state[root_luks_mapper]=""
-  fi
-}
-
-# -------------------------------------------------------------------
-# Paso 2: Particionado completo (orquestador)
-# -------------------------------------------------------------------
-step_partitioning() {
-  umount_partitions
-  clear_luks_state
-  state[lvm]=0
-  state[root_device]=""
-  state[filesystem]=""
-  state[esp]=""
-  state[extra_mounts]=""
-
-  select_device || return 1
-
-  print_info "Launching cfdisk on ${state[device]}"
-  partition_disk_cfdisk "${state[device]}" || {
-    print_error "Partition editor failed or was cancelled."
-    return 1
-  }
-
-  select_encryption_targets || return 1
-
-  choose_root_device || return 1
-
-  # Preguntar si quiere LVM sobre el root (solo si es LUKS y el usuario quiere)
-  if [[ ${state[luks]} -eq 1 ]]; then
-    read_input_text "Use LVM on top of the encrypted root?"
-    if [[ $OPTION == y ]]; then
-      local vg_name="lvm"
-      local lv_name="root"
-      local new_root
-      new_root=$(setup_lvm "${state[root_device]}" "$vg_name" "$lv_name") || {
-        print_error "LVM setup failed"
-        return 1
-      }
-      state[root_device]="$new_root"
-      state[lvm]=1
-    fi
-  fi
-
-  choose_filesystem || return 1
-
-  print_info "Formatting and mounting root"
-  format_and_mount_root "${state[root_device]}" "${state[filesystem]}" "$MOUNTPOINT" "$TRIM" || {
-    print_error "Root format/mount failed"
-    return 1
-  }
-
-  # Montar EFI
-  local esp_part
-  mapfile -t esp_parts < <(lsblk -lnpo NAME,TYPE | awk '$2=="part"{print $1}')
-  local esp_candidates=()
-  for part in "${esp_parts[@]}"; do
-    is_efi_system_partition "$part" && esp_candidates+=("$part")
-  done
-  if [[ ${#esp_candidates[@]} -eq 0 ]]; then
-    print_error "No EFI system partition found. Create one (FAT32, type EF00) in cfdisk."
-    return 1
-  fi
-  esp_candidates+=("Cancel")
-  PS3="$prompt1"
-  echo "Select EFI system partition:"
-  select esp in "${esp_candidates[@]}"; do
-    [[ "$esp" == "Cancel" ]] && return 1
-    [[ -n "$esp" ]] && break
-    invalid_option
-  done
-  read_input_text "Format $esp as FAT32?"
-  if [[ $OPTION == y ]]; then
-    mkfs.vfat -F32 "$esp" || { print_error "mkfs.vfat failed"; return 1; }
-  fi
-  mkdir -p "$MOUNTPOINT/boot"
-  mount_vfat "$esp" "$MOUNTPOINT/boot" || { print_error "ESP mount failed"; return 1; }
-  state[esp]="$esp"
-
-  mount_extra_partitions || return 1
-}
-
-choose_extra_filesystem() {
-  local fss=("ext4" "btrfs" "vfat" "Back")
-  PS3="$prompt1"
-  select fs in "${fss[@]}"; do
-    [[ "$fs" == "Back" ]] && return 1
-    [[ -n "$fs" ]] && { extra_fs="$fs"; return 0; }
-    invalid_option
-  done
-}
-
-mount_extra_partitions() {
-  local candidates part mount_dir target format_choice extra_fs
-
-  while true; do
-    mapfile -t candidates < <(list_extra_candidates "$MOUNTPOINT" "${state[root_device]}" "${state[esp]}" "${state[luks_disk]}" "${state[luks_targets]}")
-    if [[ ${#candidates[@]} -eq 0 ]]; then
-      print_info "No extra partitions available to mount."
-      return 0
-    fi
-
-    read_input_text "Mount another existing partition/disk now?"
-    [[ $OPTION == y ]] || return 0
-
-    candidates+=("Cancel")
-    PS3="$prompt1"
-    echo "Select extra partition:"
-    select part in "${candidates[@]}"; do
-      [[ "$part" == "Cancel" ]] && return 0
-      [[ -n "$part" ]] && break
-      invalid_option
-    done
-
-    while true; do
-      read -rp "Mount point inside the new system [e.g. /home, /home/media, /data]: " mount_dir
-      if [[ "$mount_dir" == /* && "$mount_dir" != "/" && "$mount_dir" != "/boot" && "$mount_dir" != "/boot/efi" ]]; then
-        break
-      fi
-      print_warning "Use an absolute mount point below /, but not /, /boot, or /boot/efi."
-    done
-
-    target="$MOUNTPOINT$mount_dir"
-    if findmnt -n "$target" &>/dev/null; then
-      read_input_text "$mount_dir is already mounted by the root layout. Replace that mount?"
-      [[ $OPTION == y ]] || continue
-      umount "$target" || { print_error "Could not unmount $target"; return 1; }
-    fi
-
-    read_input_text "Format $part before mounting? This erases data."
-    format_choice="$OPTION"
-    if [[ "$format_choice" == y ]]; then
-      choose_extra_filesystem || continue
-      format_and_mount_extra "$part" "$extra_fs" "$target" "$TRIM" || {
-        print_error "Could not format and mount $part on $mount_dir"
-        return 1
-      }
-    else
-      mount_extra "$part" "$target" || {
-        print_error "Could not mount $part on $mount_dir"
-        return 1
-      }
-    fi
-
-    state[extra_mounts]="${state[extra_mounts]}${part}:${mount_dir} "
-    print_success "$part mounted on $mount_dir"
-  done
-}
-
-# -------------------------------------------------------------------
-# UI: Elegir sistema de archivos
-# -------------------------------------------------------------------
-choose_filesystem() {
-  local fss=("btrfs" "ext4" "Back")
-  PS3="$prompt1"
-  print_info "btrfs (recommended): snapshots, zstd compress."
-  print_info "ext4: conservative, no snapshots."
-  select fs in "${fss[@]}"; do
-    [[ "$fs" == "Back" ]] && return 1
-    [[ -n "$fs" ]] && { state[filesystem]="$fs"; return 0; }
-    invalid_option
-  done
-}
-
-# -------------------------------------------------------------------
 # Paso 3: Instalación base
 # -------------------------------------------------------------------
 step_base_install() {
@@ -451,12 +78,7 @@ step_base_install() {
   configure_keymap
 }
 
-configure_keymap() {
-  echo "KEYMAP=${state[keymap]}" > "$MOUNTPOINT/etc/vconsole.conf"
-}
-
-# -------------------------------------------------------------------
-# Pasos siguientes (sin cambios relevantes)
+# System configuration steps
 # -------------------------------------------------------------------
 step_fstab() {
   print_title "FSTAB"
@@ -578,7 +200,7 @@ step_bootloader() {
   esp_parttype=$(lsblk -no PARTTYPE "$esp_dev" 2>/dev/null | head -1 | tr '[:upper:]' '[:lower:]')
   if [[ "$esp_parttype" != "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" && "$esp_parttype" != "0xef" ]]; then
     print_error "$esp_dev is not marked as an EFI System Partition. Firmware may boot back to the live ISO."
-    print_warning "In cfdisk, set the ESP type to EFI System, write changes, then mount it at /boot."
+    print_warning "Set the ESP partition type to EFI System, write changes, then mount it at /boot."
     return 1
   fi
 
@@ -643,57 +265,6 @@ step_bootloader() {
   print_success "Bootloader configured"
 }
 
-configure_efi_nvram() {
-  local esp_dev="$1"
-  local disk part_num bm_out bootnum current_order new_order entry
-
-  if [[ ! -d /sys/firmware/efi/efivars ]]; then
-    print_warning "efivarfs not available; boot will rely on /EFI/BOOT/BOOTX64.EFI fallback."
-    return 0
-  fi
-
-  disk=$(lsblk -no PKNAME "$esp_dev" 2>/dev/null | head -1)
-  part_num=$(lsblk -no PARTN "$esp_dev" 2>/dev/null | head -1)
-  if [[ -z "$disk" || -z "$part_num" ]]; then
-    print_warning "Could not resolve disk/partition for $esp_dev; fallback BOOTX64.EFI is present."
-    return 0
-  fi
-
-  arch_chroot "efibootmgr --create --disk /dev/${disk} --part ${part_num} --label 'Linux Boot Manager' --loader '\\EFI\\systemd\\systemd-bootx64.efi'" \
-    || print_warning "efibootmgr could not create/update NVRAM entry; fallback BOOTX64.EFI is present."
-
-  bm_out=$(arch_chroot "efibootmgr -v 2>/dev/null" 2>/dev/null || true)
-  bootnum=$(awk '
-    BEGIN { IGNORECASE=1 }
-    /Linux Boot Manager/ && /EFI\\systemd\\systemd-bootx64\.efi/ {
-      sub(/^Boot/, "", $1)
-      sub(/\*.*/, "", $1)
-      boot=$1
-    }
-    END { print boot }
-  ' <<< "$bm_out")
-
-  if [[ -z "$bootnum" ]]; then
-    print_warning "NVRAM entry is not visible in efibootmgr; fallback BOOTX64.EFI is present."
-    return 0
-  fi
-
-  arch_chroot "efibootmgr --bootnext ${bootnum}" \
-    || print_warning "Could not set BootNext=${bootnum}; firmware should still see fallback BOOTX64.EFI."
-
-  current_order=$(awk -F': ' '/^BootOrder:/ {print $2; exit}' <<< "$bm_out")
-  if [[ -n "$current_order" && "$current_order" != "$bootnum"* ]]; then
-    new_order="$bootnum"
-    for entry in ${current_order//,/ }; do
-      [[ "$entry" == "$bootnum" ]] && continue
-      new_order="${new_order},${entry}"
-    done
-    arch_chroot "efibootmgr --bootorder ${new_order}" \
-      || print_warning "Could not move Linux Boot Manager first in BootOrder."
-  fi
-
-  print_success "NVRAM entry checked: Boot${bootnum} (Linux Boot Manager)"
-}
 
 step_root_password() {
   print_title "ROOT PASSWORD"

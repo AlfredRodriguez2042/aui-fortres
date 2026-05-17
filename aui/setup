@@ -1,19 +1,4 @@
 #!/bin/bash
-# aui-x setup (Phase 2) — Post-boot configuration for Arch 2026
-# Forked from helmuthdu/aui, rewritten for current stack:
-#   * Uses AUR helper from Phase 1 when present (paru recommended)
-#   * GPU drivers with auto-detection (NVIDIA open-dkms for RTX 20-50, dkms for older)
-#   * Plasma 6 (KF6/Qt6/Wayland) by default, otros DE/WM disponibles
-#   * Audio user services (PipeWire stack ya instalado en install)
-#   * Fonts (Noto + Liberation + JetBrains Mono + Nerd + emoji)
-#   * Dual monitor (kscreen para Plasma, configs DE-específicas)
-#   * User creation + sudo
-#   * Optional: VPN client, Bluetooth, ZRAM
-#
-# NO incluye hardening de seguridad. Eso vive en el tool `fortress` (modular, opcional).
-# Regla del proyecto: sin acoples — se puede ejecutar este script sin nunca correr fortress.
-
-#shellcheck disable=SC1091,SC2034,SC2154,SC2155
 
 set -uo pipefail
 
@@ -29,12 +14,12 @@ fi
 USERNAME=""
 DESKTOP=""
 GPU_VENDOR=""
+GPU_ARCH=""
 GPU_DRIVER=""
 DISPLAY_MANAGER=""
 AUR_HELPER=""
 checklist=( 0 0 0 0 0 0 0 0 0 0 0 0 0 0 )
 
-#WELCOME {{{
 welcome() {
   clear
   echo -e "${Bold}AUI-X Setup — Phase 2 (post-boot configuration)${Reset}"
@@ -49,9 +34,7 @@ welcome() {
   print_line
   pause_function
 }
-#}}}
 
-#PACMAN CONFIG (multilib + paralelo) {{{
 configure_pacman() {
   print_title "PACMAN CONFIG"
   print_info "Activando multilib (necesario para Steam/Proton/lib32 de NVIDIA) y descargas paralelas."
@@ -68,60 +51,6 @@ configure_pacman() {
 
   pacman -Sy --noconfirm
   print_success "Pacman configurado con multilib y descargas paralelas."
-}
-#}}}
-
-detect_aur_helper() {
-  if command -v paru >/dev/null 2>&1; then
-    AUR_HELPER="paru"
-  elif command -v yay >/dev/null 2>&1; then
-    AUR_HELPER="yay"
-  else
-    AUR_HELPER=""
-  fi
-}
-#}}}
-
-#GPU DRIVERS {{{
-detect_gpu() {
-  local nvidia_line amd_line intel_line
-  nvidia_line=$(lspci -nn | grep -iE 'VGA|3D|Display' | grep -i nvidia | head -1)
-  amd_line=$(lspci -nn | grep -iE 'VGA|3D|Display' | grep -iE 'AMD|ATI' | head -1)
-  intel_line=$(lspci -nn | grep -iE 'VGA|3D|Display' | grep -i intel | head -1)
-
-  if [[ -n "$nvidia_line" ]]; then
-    GPU_VENDOR="nvidia"
-    # Extract device ID and classify by architecture
-    local dev_hex dev_int
-    dev_hex=$(echo "$nvidia_line" | grep -oP '10de:[0-9a-f]{4}' | head -1 | cut -d: -f2)
-    if [[ -n "$dev_hex" ]]; then
-      dev_int=$((16#$dev_hex))
-      # Blackwell (RTX 50): 0x2b00 - 0x2fff aprox
-      # Ada Lovelace (RTX 40): 0x2600 - 0x26ff, 0x27xx
-      # Ampere (RTX 30): 0x2200 - 0x25ff
-      # Turing (RTX 20 / GTX 16): 0x1e00 - 0x21ff
-      # Older: pre-Turing
-      if (( dev_int >= 0x2b00 )); then
-        GPU_ARCH="blackwell"
-      elif (( dev_int >= 0x2600 && dev_int < 0x2b00 )); then
-        GPU_ARCH="ada"
-      elif (( dev_int >= 0x2200 && dev_int < 0x2600 )); then
-        GPU_ARCH="ampere"
-      elif (( dev_int >= 0x1e00 && dev_int < 0x2200 )); then
-        GPU_ARCH="turing"
-      else
-        GPU_ARCH="pre-turing"
-      fi
-    else
-      GPU_ARCH="unknown"
-    fi
-  elif [[ -n "$amd_line" ]]; then
-    GPU_VENDOR="amd"
-  elif [[ -n "$intel_line" ]]; then
-    GPU_VENDOR="intel"
-  else
-    GPU_VENDOR="none"
-  fi
 }
 
 install_gpu_drivers() {
@@ -146,7 +75,8 @@ install_gpu_drivers() {
           opts=("nouveau/mesa (repo, recomendado)" "Skip")
           ;;
         *)
-          opts=("nvidia-open-dkms" "nouveau/mesa (repo)" "Skip")
+          print_warning "NVIDIA detectada, pero no se pudo clasificar la arquitectura. Usar nouveau/mesa es la opción segura; instala drivers propietarios manualmente si confirmas que es Turing o más nueva."
+          opts=("nouveau/mesa (repo, recomendado)" "Skip")
           ;;
       esac
       ;;
@@ -208,8 +138,7 @@ EOF
         pacman -S --needed --noconfirm \
           mesa lib32-mesa \
           vulkan-nouveau lib32-vulkan-nouveau \
-          vulkan-icd-loader lib32-vulkan-icd-loader \
-          xf86-video-nouveau
+          vulkan-icd-loader lib32-vulkan-icd-loader
         ;;
 
       "mesa + vulkan-radeon + lib32-mesa (recomendado)")
@@ -255,11 +184,7 @@ EOF
 
   print_success "GPU drivers: $GPU_DRIVER instalado."
 }
-#}}}
 
-#AUDIO USER SERVICES {{{
-# PipeWire stack ya está instalado por install Phase 1; aquí sólo habilitamos
-# los servicios de usuario para la cuenta creada.
 enable_audio_services() {
   print_title "AUDIO (PipeWire user services)"
   if [[ -z "$USERNAME" ]]; then
@@ -270,13 +195,11 @@ enable_audio_services() {
     print_info "Servicios de usuario configurados; se activarán al primer login del usuario."
   print_success "PipeWire user services habilitados para $USERNAME."
 }
-#}}}
 
-#DESKTOP ENVIRONMENT {{{
 install_desktop() {
   print_title "DESKTOP ENVIRONMENT / WINDOW MANAGER"
   local opts=(
-    "KDE Plasma 6 (Wayland, recomendado)"
+    "KDE Plasma 6 minimal (Wayland, recomendado)"
     "GNOME 46+"
     "Hyprland (Wayland, tiling)"
     "Sway (Wayland, tiling)"
@@ -286,26 +209,25 @@ install_desktop() {
   PS3="$prompt1"
   select OPT in "${opts[@]}"; do
     case "$OPT" in
-      "KDE Plasma 6 (Wayland, recomendado)")
+      "KDE Plasma 6 minimal (Wayland, recomendado)")
         DESKTOP="plasma"
         pacman -S --needed --noconfirm \
-          plasma-meta plasma-wayland-protocols \
+          plasma-desktop plasma-wayland-protocols \
           plasma-nm plasma-pa plasma-systemmonitor \
           kscreen powerdevil bluedevil \
           sddm sddm-kcm \
-          kde-applications-meta \
           dolphin konsole kate ark gwenview okular spectacle \
-          xdg-desktop-portal-kde
+          xdg-desktop-portal-kde plasma-firewall \
+          power-profiles-daemon
         DISPLAY_MANAGER="sddm"
 
-        # Multi-monitor con kscreen viene de plasma-desktop; nada extra requerido
-        # Para NVIDIA+Wayland: explicit sync (driver 555+ + KWin 6.1+ ya lo activan)
         ;;
       "GNOME 46+")
         DESKTOP="gnome"
         pacman -S --needed --noconfirm \
           gnome gnome-tweaks gnome-themes-extra \
-          xdg-desktop-portal-gnome
+          xdg-desktop-portal-gnome \
+          power-profiles-daemon
         DISPLAY_MANAGER="gdm"
         ;;
       "Hyprland (Wayland, tiling)")
@@ -343,18 +265,19 @@ install_desktop() {
     break
   done
 
-  # Habilita el display manager seleccionado
+
   case "$DISPLAY_MANAGER" in
     sddm)     systemctl enable sddm ;;
     gdm)      systemctl enable gdm ;;
     lightdm)  systemctl enable lightdm ;;
   esac
+  if [[ "$DESKTOP" == "plasma" || "$DESKTOP" == "gnome" ]]; then
+    systemctl enable power-profiles-daemon 2>/dev/null || true
+  fi
 
   print_success "$DESKTOP instalado con $DISPLAY_MANAGER habilitado."
 }
-#}}}
 
-#FONTS {{{
 install_fonts() {
   print_title "FONTS"
   print_info "Stack de fonts moderno: Noto (CJK + emoji), Liberation, JetBrains Mono, Nerd Fonts."
@@ -362,12 +285,11 @@ install_fonts() {
   pacman -S --needed --noconfirm \
     noto-fonts noto-fonts-cjk noto-fonts-emoji noto-fonts-extra \
     ttf-liberation ttf-dejavu ttf-jetbrains-mono \
-    ttf-fira-code ttf-firacode-nerd \
+    ttf-fira-code ttf-nerd-fonts-symbols \
     ttf-roboto ttf-opensans \
     adobe-source-code-pro-fonts \
     cantarell-fonts
 
-  # Configuración fontconfig: emoji color, hinting
   mkdir -p /etc/fonts/conf.d
   ln -sf /usr/share/fontconfig/conf.avail/10-sub-pixel-rgb.conf /etc/fonts/conf.d/ 2>/dev/null
   ln -sf /usr/share/fontconfig/conf.avail/11-lcdfilter-default.conf /etc/fonts/conf.d/ 2>/dev/null
@@ -375,14 +297,9 @@ install_fonts() {
   fc-cache -f
   print_success "Fonts instalados y caché regenerado."
 }
-#}}}
 
-#DUAL MONITOR {{{
-# Plasma maneja dual monitor con kscreen (incluido en plasma-desktop).
-# Para otros DE, configuración específica. Este step sólo deja un snippet
-# de referencia y verifica que las herramientas estén instaladas.
 configure_dual_monitor() {
-  print_title "DUAL MONITOR"
+  print_title "MULTI MONITOR"
 
   case "$DESKTOP" in
     plasma)
@@ -392,28 +309,16 @@ configure_dual_monitor() {
     gnome)
       print_info "GNOME usa gnome-control-center > Displays. CLI: gnome-randr-rs (AUR)"
       ;;
-    hyprland|sway)
-      pacman -S --needed --noconfirm wlr-randr
-      print_info "Wayland CLI: wlr-randr"
-      print_info "Plantilla para tu config:"
-      echo "  monitor=<NAME>,3840x2160@144,0x0,1"
-      echo "  monitor=<NAME>,3840x2160@144,3840x0,1"
-      ;;
-    i3)
-      pacman -S --needed --noconfirm xorg-xrandr arandr
-      print_info "X11 CLI: xrandr | GUI: arandr"
-      ;;
     *)
-      print_info "Sin DE detectado; instalando wlr-randr + xorg-xrandr genéricos."
-      pacman -S --needed --noconfirm wlr-randr xorg-xrandr 2>/dev/null
+      print_warning "Multi-monitor automático sólo se ofrece para Plasma y GNOME en este setup."
+      print_info "Hyprland, Sway e i3 requieren configuración por archivo/perfil. Evitamos instalar herramientas genéricas para no dejar una pantalla mal configurada."
+      return
       ;;
   esac
 
-  print_success "Herramientas de dual monitor verificadas."
+  print_success "Soporte multi-monitor verificado para $DESKTOP."
 }
-#}}}
 
-#USER ACCOUNT {{{
 create_user() {
   print_title "USER ACCOUNT"
   print_info "Crear cuenta de usuario con grupo 'wheel' (sudo)."
@@ -422,7 +327,7 @@ create_user() {
   if id "$USERNAME" >/dev/null 2>&1; then
     print_warning "Usuario $USERNAME ya existe; saltando creación."
   else
-    local user_groups=(wheel audio video input storage)
+    local user_groups=(wheel storage)
     local existing_groups=()
     local group_name
     for group_name in "${user_groups[@]}"; do
@@ -437,7 +342,7 @@ create_user() {
     passwd "$USERNAME"
   fi
 
-  # Sudo via /etc/sudoers.d (no edita /etc/sudoers directo)
+
   mkdir -p /etc/sudoers.d
   cat > /etc/sudoers.d/10-wheel <<'EOF'
 %wheel ALL=(ALL:ALL) ALL
@@ -450,9 +355,7 @@ EOF
 
   print_success "Usuario $USERNAME creado con sudo."
 }
-#}}}
 
-#VPN CLIENT (ExpressVPN) {{{
 install_vpn() {
   print_title "VPN CLIENT (opcional)"
   detect_aur_helper
@@ -461,10 +364,15 @@ install_vpn() {
   select OPT in "${opts[@]}"; do
     case "$OPT" in
       "ExpressVPN (suscripción del usuario)")
+        if [[ -z "$USERNAME" ]]; then
+          print_warning "Crea primero el usuario."
+          return
+        fi
         if [[ -z "${AUR_HELPER:-}" ]] || ! command -v "$AUR_HELPER" >/dev/null 2>&1; then
           print_warning "Instalar AUR helper primero (paru/yay)."
           return
         fi
+        pacman -S --needed --noconfirm base-devel git
         sudo -u "$USERNAME" "$AUR_HELPER" -S --noconfirm expressvpn
         print_info "Tras reboot: 'expressvpn activate', luego 'expressvpn connect smart'."
         print_info "Para autoconnect: 'expressvpn autoconnect on'."
@@ -485,9 +393,7 @@ install_vpn() {
     esac
   done
 }
-#}}}
 
-#BLUETOOTH {{{
 install_bluetooth() {
   print_title "BLUETOOTH"
   if ! lspci | grep -qi bluetooth && ! lsusb 2>/dev/null | grep -qi bluetooth; then
@@ -502,13 +408,74 @@ install_bluetooth() {
   systemctl enable bluetooth
   print_success "Bluetooth instalado y habilitado."
 }
-#}}}
 
-#ZRAM {{{
-# Idempotente respecto a Phase 1: aui/install ya escribe /etc/systemd/zram-generator.conf
-# con la versión completa (swap-priority=100, fs-type=swap). Aquí NO la pisamos para no
-# perder esos campos; sólo aseguramos paquete + servicio activo. Si la config no existe
-# (caso: setup corrido sobre un sistema ajeno a aui-x), la creamos con la versión completa.
+install_shell_tools() {
+  print_title "SHELL TOOLS"
+  if [[ -z "$USERNAME" ]]; then
+    print_warning "Crea primero el usuario."
+    return
+  fi
+
+  local user_home
+  user_home=$(getent passwd "$USERNAME" | cut -d: -f6)
+  if [[ -z "$user_home" || ! -d "$user_home" ]]; then
+    print_warning "No se pudo encontrar el home de $USERNAME."
+    return
+  fi
+
+  pacman -S --needed --noconfirm \
+    zsh zsh-theme-powerlevel10k \
+    zsh-autosuggestions zsh-syntax-highlighting \
+    bat eza fzf
+
+  write_zshrc_config "$USERNAME" "$user_home" || {
+    print_error "No se pudo escribir .zshrc para $USERNAME"
+    return 1
+  }
+
+  read_confirm "Usar zsh como shell por defecto para $USERNAME?" "y"
+  if [[ $OPTION == y ]]; then
+    chsh -s /usr/bin/zsh "$USERNAME"
+  fi
+
+  print_success "Zsh, Powerlevel10k y utilidades de terminal instaladas para $USERNAME."
+}
+
+install_development_tools() {
+  print_title "DEVELOPMENT TOOLS"
+  local opts=("Docker + Compose v2" "Base build tools" "Skip")
+  PS3="$prompt1"
+  select OPT in "${opts[@]}"; do
+    case "$OPT" in
+      "Docker + Compose v2")
+        pacman -S --needed --noconfirm \
+          base-devel git \
+          docker docker-compose docker-buildx
+        systemctl enable docker
+        if [[ -n "$USERNAME" ]] && id "$USERNAME" >/dev/null 2>&1; then
+          usermod -aG docker "$USERNAME"
+          print_info "$USERNAME agregado al grupo docker. Requiere logout/login o reboot."
+        else
+          print_warning "Sin usuario creado; agrega tu usuario al grupo docker luego si lo necesitas."
+        fi
+        break
+        ;;
+      "Base build tools")
+        pacman -S --needed --noconfirm base-devel git
+        break
+        ;;
+      "Skip")
+        return
+        ;;
+      *)
+        invalid_option
+        ;;
+    esac
+  done
+
+  print_success "Herramientas de desarrollo instaladas."
+}
+
 configure_zram() {
   print_title "ZRAM (swap comprimido en RAM)"
 
@@ -542,9 +509,7 @@ EOF
   systemctl start systemd-zram-setup@zram0.service 2>/dev/null || true
   print_success "ZRAM configurado (half-RAM o 8GB max, zstd, priority 100)."
 }
-#}}}
 
-#FINISH {{{
 finish() {
   print_title "SETUP COMPLETED"
   print_info "Resumen de la configuración:"
@@ -565,9 +530,7 @@ finish() {
   fi
   exit 0
 }
-#}}}
 
-#MAIN LOOP {{{
 welcome
 check_root
 check_archlinux
@@ -582,9 +545,11 @@ while true; do
   echo " 4) $(mainmenu_item "${checklist[4]}" "Desktop environment" "${DESKTOP:-}")"
   echo " 5) $(mainmenu_item "${checklist[5]}" "Audio user services")"
   echo " 6) $(mainmenu_item "${checklist[6]}" "Fonts")"
-  echo " 7) $(mainmenu_item "${checklist[7]}" "Dual monitor")"
+  echo " 7) $(mainmenu_item "${checklist[7]}" "Multi monitor")"
   echo " 8) $(mainmenu_item "${checklist[8]}" "VPN client (optional)")"
   echo " 9) $(mainmenu_item "${checklist[9]}" "Bluetooth (optional)")"
+  echo "10) $(mainmenu_item "${checklist[10]}" "Shell tools (zsh + terminal)")"
+  echo "11) $(mainmenu_item "${checklist[11]}" "Development tools (optional)")"
   echo ""
   echo "  (ZRAM ya está activo automáticamente desde Phase 1 vía systemd-zram-generator)"
   echo ""
@@ -602,9 +567,10 @@ while true; do
       7)  configure_dual_monitor; checklist[7]=1 ;;
       8)  install_vpn;            checklist[8]=1 ;;
       9)  install_bluetooth;      checklist[9]=1 ;;
+      10) install_shell_tools;     checklist[10]=1 ;;
+      11) install_development_tools; checklist[11]=1 ;;
       "d") finish ;;
       *) invalid_option ;;
     esac
   done
 done
-#}}}
