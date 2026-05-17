@@ -18,6 +18,13 @@ printf '== storage helpers ==\n'
 [[ "$(partition_path /dev/nvme0n1 1)" == "/dev/nvme0n1p1" ]] || fail "nvme partition path"
 [[ "$(partition_path /dev/mmcblk0 2)" == "/dev/mmcblk0p2" ]] || fail "mmc partition path"
 
+printf '== single disk auto-selection ==\n'
+reset_partition_state
+list_install_disks() { printf '/dev/sda\n'; }
+print_attached_devices() { printf '  - /dev/sda           61.8G\n'; }
+select_device
+[[ "${state[device]}" == "/dev/sda" ]] || fail "single disk should be auto-selected"
+
 printf '== plain root strategy ==\n'
 reset_partition_state
 state[partition_layout]="plain"

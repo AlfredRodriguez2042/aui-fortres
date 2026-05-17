@@ -56,17 +56,40 @@ clear_luks_state() {
   state[luks_devices]=""
 }
 
+list_install_disks() {
+  lsblk -dnpo NAME,TYPE | awk '$2=="disk" && $1 ~ /(sd|hd|vd|nvme|mmcblk)/ {print $1}'
+}
+
+print_attached_devices() {
+  lsblk -dnpo NAME,SIZE,TYPE,MODEL | awk '
+    $3=="disk" && $1 ~ /(sd|hd|vd|nvme|mmcblk)/ {
+      model=$4
+      for (i=5; i<=NF; i++) model=model " " $i
+      printf "  - %-18s %-8s %s\n", $1, $2, model
+    }
+  '
+}
+
 select_device() {
-  mapfile -t devices_list < <(lsblk -d | awk '{print "/dev/" $1}' | grep -E 'sd|hd|vd|nvme|mmcblk')
+  mapfile -t devices_list < <(list_install_disks)
   if [[ ${#devices_list[@]} -eq 0 ]]; then
     print_error "No disks detected."
     return 1
   fi
+
+  echo "Detected install disks:"
+  print_attached_devices
+  echo ""
+
+  if [[ ${#devices_list[@]} -eq 1 ]]; then
+    state[device]="${devices_list[0]}"
+    print_info "Only one disk detected. Using ${state[device]} for the automatic root layout."
+    return 0
+  fi
+
   devices_list+=("Back")
   PS3="$prompt1"
-  echo -e "Attached devices:\n"
-  lsblk -lnp -I 2,3,8,9,22,34,56,57,58,65,66,67,68,69,70,71,72,91,128,129,130,131,132,133,134,135,259 | awk '{print $1,$4,$6,$7}' | column -t
-  echo -e "\nSelect device to partition (or 'Back' to abort):\n"
+  echo "Select disk to partition (or 'Back' to abort):"
   select device in "${devices_list[@]}"; do
     [[ "$device" == "Back" ]] && return 1
     [[ -n "$device" ]] && break
@@ -365,6 +388,7 @@ mount_extra_partitions() {
   while true; do
     mapfile -t candidates < <(list_extra_candidates "$MOUNTPOINT" "${state[root_device]}" "${state[esp]}" "${state[luks_disk]}" "${state[luks_targets]} ${state[luks_devices]}")
     if [[ ${#candidates[@]} -eq 0 ]]; then
+      [[ "${state[partition_mode]}" == "automatic" ]] && return 0
       print_info "No extra partitions available to mount."
       return 0
     fi
