@@ -426,7 +426,11 @@ Extra mounts: ${state[extra_mounts]:-none}
 
 ## Chroot (live USB)
 cryptsetup open ${state[luks_disk]:-<device>} ${state[root_luks_mapper]:-cryptroot}
-vgchange -ay
+EOF
+  if [[ ${state[lvm]} -eq 1 ]]; then
+    echo "vgchange -ay" >> "$MOUNTPOINT"/root/RECOVERY.md
+  fi
+  cat >> "$MOUNTPOINT"/root/RECOVERY.md <<EOF
 mount ${state[root_device]} /mnt
 mount /dev/<esp> /mnt/boot
 arch-chroot /mnt

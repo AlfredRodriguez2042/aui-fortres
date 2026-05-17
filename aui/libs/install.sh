@@ -265,10 +265,11 @@ select_existing_esp() {
 }
 
 prepare_root_device() {
-  local root_part="$1" mapper_path new_root
+  local root_part="$1" mapper_path
   state[root_part]="$root_part"
 
   if [[ "${state[partition_layout]}" == "luks" ]]; then
+    state[lvm]=0
     state[luks]=1
     state[luks_disk]="$root_part"
     state[root_luks_mapper]="cryptroot"
@@ -281,18 +282,9 @@ prepare_root_device() {
     }
     state[luks_devices]="$mapper_path"
     state[root_device]="$mapper_path"
-
-    read_input_text "Use LVM on top of the encrypted root?"
-    if [[ $OPTION == y ]]; then
-      new_root=$(setup_lvm "${state[root_device]}" "lvm" "root") || {
-        print_error "LVM setup failed"
-        return 1
-      }
-      state[root_device]="$new_root"
-      state[lvm]=1
-    fi
   else
     clear_luks_state
+    state[lvm]=0
     state[root_device]="$root_part"
   fi
 }

@@ -42,12 +42,12 @@ luks_format() {
   [[ "$3" == "cryptroot" ]] || fail "luks mapper name"
   printf '/dev/mapper/cryptroot\n'
 }
-read_input_text() { OPTION=n; }
 prepare_root_device /dev/sda2
 [[ "${state[root_part]}" == "/dev/sda2" ]] || fail "luks root_part"
 [[ "${state[root_device]}" == "/dev/mapper/cryptroot" ]] || fail "luks root_device"
 [[ "${state[luks_disk]}" == "/dev/sda2" ]] || fail "luks_disk"
 [[ "${state[root_luks_mapper]}" == "cryptroot" ]] || fail "root_luks_mapper"
+[[ "${state[lvm]}" -eq 0 ]] || fail "encrypted root should not enable lvm"
 
 printf '== existing root confirmation ==\n'
 reset_partition_state
